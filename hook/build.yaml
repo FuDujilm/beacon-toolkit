@@ -1,0 +1,7 @@
+targets:
+  $default:
+    builders:
+      sqlite3:
+        options:
+          sqlite3:
+            download: false

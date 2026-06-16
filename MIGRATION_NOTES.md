@@ -3,7 +3,7 @@
 ## 迁移信息
 
 - **源项目**: MeowzExam/mobile
-- **目标项目**: breacon-toolkit (独立项目)
+- **目标项目**: beacon-toolkit (独立项目)
 - **迁移日期**: 2026-06-16
 - **迁移方式**: 完整复制 + 文档整理
 
@@ -64,7 +64,7 @@
 ## 迁移后的变更
 
 ### 新增文件
-1. **README.md** - 专门为 breacon-toolkit 编写的完整项目说明
+1. **README.md** - 专门为 beacon-toolkit 编写的完整项目说明
 2. **MIGRATION_NOTES.md** - 本文件，记录迁移过程
 
 ### 重命名文件
@@ -80,12 +80,12 @@
 ## 下一步建议
 
 ### 1. 包名更新
-建议将应用包名从 MeowzExam 相关改为 breacon-toolkit 相关：
+建议将应用包名从 MeowzExam 相关改为 beacon-toolkit 相关：
 
 **Android**:
 ```gradle
 // android/app/build.gradle.kts
-applicationId = "com.breacon.toolkit"  // 替换原有的 work.hamcy.exam
+applicationId = "com.beacon.toolkit"  // 替换原有的 work.hamcy.exam
 ```
 
 **iOS**:
@@ -100,8 +100,8 @@ applicationId = "com.breacon.toolkit"  // 替换原有的 work.hamcy.exam
 ### 2. 应用名称更新
 ```yaml
 # pubspec.yaml
-name: breacon_toolkit
-description: Breacon Toolkit - Flutter Mobile Application
+name: beacon_toolkit
+description: Beacon Toolkit - Flutter Mobile Application
 ```
 
 ### 3. 图标和启动画面

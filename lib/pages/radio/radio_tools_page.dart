@@ -3,8 +3,10 @@ import 'package:flutter/material.dart';
 import '../home/calendar_page.dart';
 import '../practice/practice_page.dart';
 import 'frequency_table_page.dart';
+import 'grid_map_page.dart';
 import 'radio_placeholder_page.dart';
 import 'radio_theme.dart';
+import 'satellite_tracker_page.dart';
 
 class RadioToolsPage extends StatefulWidget {
   const RadioToolsPage({super.key});
@@ -65,9 +67,7 @@ class _RadioToolsPageState extends State<RadioToolsPage> {
                     child: Text(
                       _categories[index],
                       style: TextStyle(
-                        color: selected
-                            ? colors.text
-                            : colors.muted,
+                        color: selected ? colors.text : colors.muted,
                         fontWeight:
                             selected ? FontWeight.w900 : FontWeight.w700,
                       ),
@@ -104,7 +104,9 @@ class _RadioToolsPageState extends State<RadioToolsPage> {
         '经纬度与 Maidenhead 网格定位',
         Icons.public,
         const Color(0xff5b73ff),
-        () => _openPlaceholder(context, 'QTH 定位', Icons.public),
+        () => Navigator.of(context).push(
+          MaterialPageRoute(builder: (_) => const GridMapPage()),
+        ),
       ),
       _RadioTool(
         '频率表',
@@ -120,7 +122,9 @@ class _RadioToolsPageState extends State<RadioToolsPage> {
         '实时卫星位置与过境预报',
         Icons.satellite_alt,
         const Color(0xff3f8cff),
-        () => _openPlaceholder(context, '卫星追踪', Icons.satellite_alt),
+        () => Navigator.of(context).push(
+          MaterialPageRoute(builder: (_) => const SatelliteTrackerPage()),
+        ),
       ),
       _RadioTool(
         '天线计算器',

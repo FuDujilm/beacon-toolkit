@@ -319,28 +319,48 @@ class SatellitePass {
   final int? noradCatId;
   final DateTime aos;
   final DateTime los;
+  final DateTime maxElevationAt;
   final double maxElevation;
   final double aosAzimuth;
   final double losAzimuth;
+  final double? currentElevation;
+  final double? currentAzimuth;
+  final double? currentRangeKm;
+  final double? dopplerFactor;
   final String source;
+  final List<SatelliteLookSample> lookSamples;
+  final List<GroundTrackPoint> trackPoints;
 
   const SatellitePass({
     required this.satelliteName,
     this.noradCatId,
     required this.aos,
     required this.los,
+    required this.maxElevationAt,
     required this.maxElevation,
     required this.aosAzimuth,
     required this.losAzimuth,
+    this.currentElevation,
+    this.currentAzimuth,
+    this.currentRangeKm,
+    this.dopplerFactor,
     required this.source,
+    this.lookSamples = const [],
+    this.trackPoints = const [],
   });
 
   Duration get duration => los.difference(aos);
+
+  bool get isActive {
+    final now = DateTime.now();
+    return !now.isBefore(aos) && !now.isAfter(los);
+  }
 }
 
 class SatelliteSummary {
   final String name;
   final int? noradCatId;
+  final SatelliteCatalogItem? catalogItem;
   final SatellitePass? nextPass;
   final int upcomingPassCount;
   final String tleSource;
@@ -348,30 +368,227 @@ class SatelliteSummary {
   const SatelliteSummary({
     required this.name,
     this.noradCatId,
+    this.catalogItem,
     this.nextPass,
     required this.upcomingPassCount,
     required this.tleSource,
   });
 }
 
+class SatelliteCatalogItem {
+  final String? id;
+  final String name;
+  final String? displayName;
+  final int? noradCatId;
+  final String? satnogsId;
+  final String? callsign;
+  final List<String> aliases;
+  final String? status;
+  final String? countries;
+  final String? operatorName;
+  final String? website;
+  final String? imageUrl;
+  final String? amsatName;
+  final String? amsatDisplayName;
+  final int? amsatReportCount;
+  final DateTime? amsatLatestReportedAt;
+  final DateTime? sourceUpdatedAt;
+  final DateTime? updatedAt;
+  final String tleSource;
+  final bool subscribed;
+
+  const SatelliteCatalogItem({
+    this.id,
+    required this.name,
+    this.displayName,
+    this.noradCatId,
+    this.satnogsId,
+    this.callsign,
+    this.aliases = const [],
+    this.status,
+    this.countries,
+    this.operatorName,
+    this.website,
+    this.imageUrl,
+    this.amsatName,
+    this.amsatDisplayName,
+    this.amsatReportCount,
+    this.amsatLatestReportedAt,
+    this.sourceUpdatedAt,
+    this.updatedAt,
+    required this.tleSource,
+    this.subscribed = false,
+  });
+
+  factory SatelliteCatalogItem.fromJson(Map<String, dynamic> json) {
+    return SatelliteCatalogItem(
+      id: json['id'] as String?,
+      name: json['name'] as String? ?? json['display_name'] as String? ?? '',
+      displayName: json['display_name'] as String?,
+      noradCatId: (json['norad_cat_id'] as num?)?.toInt(),
+      satnogsId: json['satnogs_id'] as String?,
+      callsign: json['callsign'] as String?,
+      aliases: (json['aliases'] as List<dynamic>?)
+              ?.map((item) => item.toString())
+              .where((item) => item.isNotEmpty)
+              .toList() ??
+          const [],
+      status: json['status'] as String?,
+      countries: json['countries'] as String?,
+      operatorName: json['operator'] as String?,
+      website: json['website'] as String?,
+      imageUrl: json['image_url'] as String?,
+      amsatName: json['amsat_name'] as String?,
+      amsatDisplayName: json['amsat_display_name'] as String?,
+      amsatReportCount: (json['amsat_report_count'] as num?)?.toInt(),
+      amsatLatestReportedAt:
+          DateTime.tryParse(json['amsat_latest_reported_at'] as String? ?? ''),
+      sourceUpdatedAt:
+          DateTime.tryParse(json['source_updated_at'] as String? ?? ''),
+      updatedAt: DateTime.tryParse(json['updated_at'] as String? ?? ''),
+      tleSource: 'beacon-api',
+    );
+  }
+
+  Map<String, dynamic> toLocalMap() {
+    return {
+      'id': id,
+      'name': name,
+      'display_name': displayName,
+      'norad_cat_id': noradCatId,
+      'satnogs_id': satnogsId,
+      'callsign': callsign,
+      'aliases': aliases,
+      'status': status,
+      'countries': countries,
+      'operator': operatorName,
+      'website': website,
+      'image_url': imageUrl,
+      'amsat_name': amsatName,
+      'amsat_display_name': amsatDisplayName,
+      'amsat_report_count': amsatReportCount,
+      'amsat_latest_reported_at': amsatLatestReportedAt?.toIso8601String(),
+      'source_updated_at': sourceUpdatedAt?.toIso8601String(),
+      'updated_at': updatedAt?.toIso8601String(),
+    };
+  }
+
+  SatelliteCatalogItem copyWith({
+    bool? subscribed,
+  }) {
+    return SatelliteCatalogItem(
+      id: id,
+      name: name,
+      displayName: displayName,
+      noradCatId: noradCatId,
+      satnogsId: satnogsId,
+      callsign: callsign,
+      aliases: aliases,
+      status: status,
+      countries: countries,
+      operatorName: operatorName,
+      website: website,
+      imageUrl: imageUrl,
+      amsatName: amsatName,
+      amsatDisplayName: amsatDisplayName,
+      amsatReportCount: amsatReportCount,
+      amsatLatestReportedAt: amsatLatestReportedAt,
+      sourceUpdatedAt: sourceUpdatedAt,
+      updatedAt: updatedAt,
+      tleSource: tleSource,
+      subscribed: subscribed ?? this.subscribed,
+    );
+  }
+}
+
+class SatelliteMapItem {
+  final String name;
+  final int? noradCatId;
+  final SatellitePass? nextPass;
+  final GroundTrackPoint? currentPosition;
+  final List<GroundTrackPoint> groundTrack;
+
+  const SatelliteMapItem({
+    required this.name,
+    this.noradCatId,
+    this.nextPass,
+    this.currentPosition,
+    this.groundTrack = const [],
+  });
+}
+
 class SatelliteDetail {
   final String name;
   final int? noradCatId;
+  final SatelliteCatalogItem? catalogItem;
   final List<SatellitePass> passes;
   final List<SatelliteTransponder> transponders;
+  final List<SatelliteStatusSummary> statusSummaries;
   final String tleSource;
   final DateTime? tleUpdatedAt;
+  final GroundTrackPoint? currentPosition;
+  final List<GroundTrackPoint> groundTrack;
 
   const SatelliteDetail({
     required this.name,
     this.noradCatId,
+    this.catalogItem,
     required this.passes,
     required this.transponders,
+    this.statusSummaries = const [],
     required this.tleSource,
     this.tleUpdatedAt,
+    this.currentPosition,
+    this.groundTrack = const [],
   });
 
   SatellitePass? get nextPass => passes.isEmpty ? null : passes.first;
+}
+
+class ObserverLocation {
+  final double latitude;
+  final double longitude;
+  final double altitudeKm;
+  final String label;
+  final String source;
+
+  const ObserverLocation({
+    required this.latitude,
+    required this.longitude,
+    this.altitudeKm = 0,
+    required this.label,
+    required this.source,
+  });
+}
+
+class GroundTrackPoint {
+  final DateTime time;
+  final double latitude;
+  final double longitude;
+  final double altitudeKm;
+
+  const GroundTrackPoint({
+    required this.time,
+    required this.latitude,
+    required this.longitude,
+    required this.altitudeKm,
+  });
+}
+
+class SatelliteLookSample {
+  final DateTime time;
+  final double elevation;
+  final double azimuth;
+  final double rangeKm;
+  final GroundTrackPoint groundPoint;
+
+  const SatelliteLookSample({
+    required this.time,
+    required this.elevation,
+    required this.azimuth,
+    required this.rangeKm,
+    required this.groundPoint,
+  });
 }
 
 class SatelliteTransponder {
@@ -407,4 +624,90 @@ class SatelliteTransponder {
       updatedAt: DateTime.tryParse(json['updated'] as String? ?? ''),
     );
   }
+
+  factory SatelliteTransponder.fromBeaconApiJson(Map<String, dynamic> json) {
+    final uplink = json['uplink'] as String?;
+    final downlink = json['downlink'] as String?;
+    final beacon = json['beacon'] as String?;
+    final mode = json['mode'] as String? ?? '';
+    return SatelliteTransponder(
+      description: [
+        if (uplink != null && uplink.isNotEmpty) '上行 $uplink MHz',
+        if (downlink != null && downlink.isNotEmpty) '下行 $downlink MHz',
+        if (beacon != null && beacon.isNotEmpty) '信标 $beacon MHz',
+      ].join(' / ').ifEmpty('卫星频率'),
+      type: json['source'] as String? ?? 'beacon-api',
+      mode: mode,
+      uplinkLow: _mhzTextToHz(uplink),
+      downlinkLow: _mhzTextToHz(downlink ?? beacon),
+      alive: json['is_active'] as bool? ?? true,
+      status: (json['is_active'] as bool?) == false ? 'inactive' : 'active',
+      updatedAt: DateTime.tryParse(json['updated_at'] as String? ?? ''),
+    );
+  }
+}
+
+class SatelliteStatusSummary {
+  final String amsatName;
+  final String? satelliteDisplayName;
+  final String report;
+  final String reportLabel;
+  final String statusLevel;
+  final bool isPositive;
+  final int reportCount;
+  final DateTime? latestReportedAt;
+  final DateTime? updatedAt;
+
+  const SatelliteStatusSummary({
+    required this.amsatName,
+    this.satelliteDisplayName,
+    required this.report,
+    this.reportLabel = '',
+    this.statusLevel = 'unknown',
+    this.isPositive = false,
+    required this.reportCount,
+    this.latestReportedAt,
+    this.updatedAt,
+  });
+
+  factory SatelliteStatusSummary.fromJson(Map<String, dynamic> json) {
+    return SatelliteStatusSummary(
+      amsatName: json['amsat_name'] as String? ?? '',
+      satelliteDisplayName: json['satellite_display_name'] as String?,
+      report: json['report'] as String? ?? 'unknown',
+      reportLabel: json['report_label'] as String? ?? '',
+      statusLevel: json['status_level'] as String? ?? 'unknown',
+      isPositive: json['is_positive'] as bool? ?? false,
+      reportCount: (json['report_count'] as num?)?.toInt() ?? 0,
+      latestReportedAt:
+          DateTime.tryParse(json['latest_reported_at'] as String? ?? ''),
+      updatedAt: DateTime.tryParse(json['updated_at'] as String? ?? ''),
+    );
+  }
+
+  Map<String, dynamic> toLocalMap(String satelliteId) {
+    return {
+      'satellite_id': satelliteId,
+      'amsat_name': amsatName,
+      'satellite_display_name': satelliteDisplayName,
+      'report': report,
+      'report_label': reportLabel,
+      'status_level': statusLevel,
+      'is_positive': isPositive ? 1 : 0,
+      'report_count': reportCount,
+      'latest_reported_at': latestReportedAt?.toIso8601String(),
+      'updated_at': updatedAt?.toIso8601String(),
+    };
+  }
+}
+
+extension _StringEmptyFallback on String {
+  String ifEmpty(String fallback) => isEmpty ? fallback : this;
+}
+
+int? _mhzTextToHz(String? value) {
+  if (value == null || value.trim().isEmpty) return null;
+  final match = RegExp(r'([0-9]+(?:\.[0-9]+)?)').firstMatch(value);
+  final mhz = double.tryParse(match?.group(1) ?? '');
+  return mhz == null ? null : (mhz * 1000000).round();
 }

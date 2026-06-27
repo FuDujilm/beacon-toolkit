@@ -10,6 +10,7 @@ import '../../services/exam_service.dart';
 import '../../services/local_database_service.dart';
 import '../../services/user_settings_service.dart';
 import 'frequency_table_page.dart';
+import 'grid_map_page.dart';
 import 'radio_placeholder_page.dart';
 import 'radio_theme.dart';
 
@@ -73,8 +74,7 @@ class _RadioHomePageState extends State<RadioHomePage> {
       setState(() {
         _todayAnswered = (userStats['todayAnswered'] as num?)?.toInt() ?? 0;
         _weekAnswered = (userStats['weekAnswered'] as num?)?.toInt() ?? 0;
-        _weekAccuracy =
-            (userStats['weekAccuracy'] as num?)?.toDouble() ?? 0;
+        _weekAccuracy = (userStats['weekAccuracy'] as num?)?.toDouble() ?? 0;
         _completedQuestions =
             (libraryStats['browsedCount'] as num?)?.toInt() ?? 0;
         _totalQuestions =
@@ -152,13 +152,16 @@ class _RadioHomePageState extends State<RadioHomePage> {
                     onTap: () {},
                   ),
                   const SizedBox(height: 12),
-                  GridView.count(
+                  GridView(
                     physics: const NeverScrollableScrollPhysics(),
                     shrinkWrap: true,
-                    crossAxisCount: 4,
-                    crossAxisSpacing: 10,
-                    mainAxisSpacing: 10,
-                    childAspectRatio: 0.92,
+                    gridDelegate:
+                        const SliverGridDelegateWithFixedCrossAxisCount(
+                      crossAxisCount: 4,
+                      crossAxisSpacing: 10,
+                      mainAxisSpacing: 10,
+                      mainAxisExtent: 104,
+                    ),
                     children: [
                       _ToolTile(
                         title: '呼号查询',
@@ -175,11 +178,10 @@ class _RadioHomePageState extends State<RadioHomePage> {
                         title: 'QTH 定位',
                         icon: Icons.public,
                         color: const Color(0xff6a6dff),
-                        onTap: () => _openPlaceholder(
-                          context,
-                          'QTH 定位',
-                          Icons.public,
-                          '经纬度与 Maidenhead 网格定位工具。',
+                        onTap: () => Navigator.of(context).push(
+                          MaterialPageRoute(
+                            builder: (_) => const GridMapPage(),
+                          ),
                         ),
                       ),
                       _ToolTile(
@@ -413,10 +415,10 @@ class _HeroPanel extends StatelessWidget {
                                   fontWeight: FontWeight.w900,
                                 ),
                               ),
-                              SizedBox(width: 8),
-                              Icon(Icons.circle,
+                              const SizedBox(width: 8),
+                              const Icon(Icons.circle,
                                   color: Color(0xff52dc62), size: 9),
-                              SizedBox(width: 4),
+                              const SizedBox(width: 4),
                               Text('在线',
                                   style: TextStyle(
                                     color: isDark
@@ -425,7 +427,7 @@ class _HeroPanel extends StatelessWidget {
                                   )),
                             ],
                           ),
-                          SizedBox(height: 8),
+                          const SizedBox(height: 8),
                           Text(
                             '${radioProfile.qth} · ${radioProfile.grid}',
                             style: TextStyle(
@@ -437,18 +439,18 @@ class _HeroPanel extends StatelessWidget {
                         ],
                       ),
                     ),
-                    SizedBox(width: 16),
+                    const SizedBox(width: 16),
                     Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
-                        Text(
+                        const Text(
                           '业余电台执照',
                           style: TextStyle(color: Color(0xff5fed70)),
                         ),
-                        SizedBox(height: 2),
+                        const SizedBox(height: 2),
                         Text(
                           radioProfile.licenseClass,
-                          style: TextStyle(
+                          style: const TextStyle(
                             color: Color(0xff6cff72),
                             fontSize: 26,
                             fontWeight: FontWeight.w900,
@@ -460,9 +462,8 @@ class _HeroPanel extends StatelessWidget {
                               ? radioProfile.licenseExpiry
                               : '${radioProfile.licenseExpiry} 到期',
                           style: TextStyle(
-                            color: isDark
-                                ? const Color(0xff8fa1bc)
-                                : colors.muted,
+                            color:
+                                isDark ? const Color(0xff8fa1bc) : colors.muted,
                           ),
                         ),
                       ],
@@ -538,7 +539,7 @@ class _ToolTile extends StatelessWidget {
       child: InkWell(
         onTap: onTap,
         child: Container(
-          padding: const EdgeInsets.all(10),
+          padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 9),
           decoration: BoxDecoration(
             border: Border.all(color: colors.border),
             borderRadius: BorderRadius.circular(16),
@@ -547,15 +548,15 @@ class _ToolTile extends StatelessWidget {
             mainAxisAlignment: MainAxisAlignment.center,
             children: [
               Container(
-                width: 44,
-                height: 44,
+                width: 40,
+                height: 40,
                 decoration: BoxDecoration(
                   color: color.withValues(alpha: 0.92),
                   borderRadius: BorderRadius.circular(12),
                 ),
-                child: Icon(icon, color: Colors.white, size: 25),
+                child: Icon(icon, color: Colors.white, size: 24),
               ),
-              const SizedBox(height: 10),
+              const SizedBox(height: 7),
               Text(
                 title,
                 maxLines: 2,

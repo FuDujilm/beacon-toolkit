@@ -1,5 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
+
+import '../../services/app_endpoint_settings_service.dart';
 import '../../services/auth_service.dart';
 
 class DeveloperPage extends StatefulWidget {
@@ -10,82 +12,160 @@ class DeveloperPage extends StatefulWidget {
 }
 
 class _DeveloperPageState extends State<DeveloperPage> {
-  final _apiUrlController = TextEditingController();
+  final _examApiUrlController = TextEditingController();
+  final _beaconApiUrlController = TextEditingController();
+  final _tiandituTokenController = TextEditingController();
+  final _endpointSettingsService = const AppEndpointSettingsService();
+
   bool _isLoading = true;
-  bool _isSaving = false;
-  bool _isTesting = false;
-  Map<String, dynamic>? _testResult;
+  bool _isSavingExamApi = false;
+  bool _isSavingBeaconApi = false;
+  bool _isSavingTianditu = false;
+  bool _isTestingExamApi = false;
+  bool _isTestingBeaconApi = false;
+  Map<String, dynamic>? _examApiTestResult;
+  Map<String, dynamic>? _beaconApiTestResult;
 
   @override
   void initState() {
     super.initState();
-    _loadApiUrl();
+    _loadSettings();
   }
 
   @override
   void dispose() {
-    _apiUrlController.dispose();
+    _examApiUrlController.dispose();
+    _beaconApiUrlController.dispose();
+    _tiandituTokenController.dispose();
     super.dispose();
   }
 
-  Future<void> _loadApiUrl() async {
-    final currentUrl = await context.read<AuthService>().getApiUrl();
+  Future<void> _loadSettings() async {
+    final authService = context.read<AuthService>();
+    final results = await Future.wait([
+      authService.getApiUrl(),
+      _endpointSettingsService.getBeaconApiBaseUrl(),
+      _endpointSettingsService.getTiandituToken(),
+    ]);
     if (!mounted) return;
     setState(() {
-      _apiUrlController.text = currentUrl;
+      _examApiUrlController.text = results[0];
+      _beaconApiUrlController.text = results[1];
+      _tiandituTokenController.text = results[2];
       _isLoading = false;
     });
   }
 
-  Future<void> _testConnection() async {
+  Future<void> _testExamApiConnection() async {
     setState(() {
-      _isTesting = true;
-      _testResult = null;
+      _isTestingExamApi = true;
+      _examApiTestResult = null;
     });
 
     final authService = context.read<AuthService>();
     final previousUrl = await authService.getApiUrl();
-    await authService.updateApiUrl(_apiUrlController.text.trim());
+    await authService.updateApiUrl(_examApiUrlController.text.trim());
     final result = await authService.checkConnectivity();
     await authService.updateApiUrl(previousUrl);
 
     if (!mounted) return;
     setState(() {
-      _testResult = result;
-      _isTesting = false;
+      _examApiTestResult = result;
+      _isTestingExamApi = false;
     });
   }
 
-  Future<void> _saveApiUrl() async {
-    final nextUrl = _apiUrlController.text.trim();
+  Future<void> _testBeaconApiConnection() async {
+    setState(() {
+      _isTestingBeaconApi = true;
+      _beaconApiTestResult = null;
+    });
+
+    final result = await _endpointSettingsService.testBeaconApiConnection(
+      _beaconApiUrlController.text.trim(),
+    );
+
+    if (!mounted) return;
+    setState(() {
+      _beaconApiTestResult = result;
+      _isTestingBeaconApi = false;
+    });
+  }
+
+  Future<void> _saveExamApiUrl() async {
+    final nextUrl = _examApiUrlController.text.trim();
+    final authService = context.read<AuthService>();
     if (nextUrl.isEmpty) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('请输入服务器 API 地址')),
-      );
+      _showSnackBar('请输入考试 API 地址');
       return;
     }
 
-    setState(() => _isSaving = true);
+    setState(() => _isSavingExamApi = true);
     try {
-      await context.read<AuthService>().updateApiUrl(nextUrl);
+      await authService.updateApiUrl(nextUrl);
+      final currentUrl = await authService.getApiUrl();
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('服务器地址已保存')),
-      );
+      setState(() => _examApiUrlController.text = currentUrl);
+      _showSnackBar('考试 API 地址已保存');
     } catch (e) {
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('保存失败: $e'), backgroundColor: Colors.red),
-      );
+      _showSnackBar('保存失败: $e', error: true);
     } finally {
-      if (mounted) setState(() => _isSaving = false);
+      if (mounted) setState(() => _isSavingExamApi = false);
     }
+  }
+
+  Future<void> _saveBeaconApiUrl() async {
+    final nextUrl = _beaconApiUrlController.text.trim();
+    if (nextUrl.isEmpty) {
+      _showSnackBar('请输入 beacon-api 地址');
+      return;
+    }
+
+    setState(() => _isSavingBeaconApi = true);
+    try {
+      await _endpointSettingsService.updateBeaconApiBaseUrl(nextUrl);
+      final currentUrl = await _endpointSettingsService.getBeaconApiBaseUrl();
+      if (!mounted) return;
+      setState(() => _beaconApiUrlController.text = currentUrl);
+      _showSnackBar('beacon-api 地址已保存');
+    } catch (e) {
+      if (!mounted) return;
+      _showSnackBar('保存失败: $e', error: true);
+    } finally {
+      if (mounted) setState(() => _isSavingBeaconApi = false);
+    }
+  }
+
+  Future<void> _saveTiandituToken() async {
+    setState(() => _isSavingTianditu = true);
+    try {
+      await _endpointSettingsService.updateTiandituToken(
+        _tiandituTokenController.text,
+      );
+      final token = await _endpointSettingsService.getTiandituToken();
+      if (!mounted) return;
+      setState(() => _tiandituTokenController.text = token);
+      _showSnackBar(token.isEmpty ? '天地图 Token 已清空' : '天地图 Token 已保存');
+    } catch (e) {
+      if (!mounted) return;
+      _showSnackBar('保存失败: $e', error: true);
+    } finally {
+      if (mounted) setState(() => _isSavingTianditu = false);
+    }
+  }
+
+  void _showSnackBar(String message, {bool error = false}) {
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(message),
+        backgroundColor: error ? Colors.red : null,
+      ),
+    );
   }
 
   @override
   Widget build(BuildContext context) {
-    final result = _testResult;
-
     return Scaffold(
       appBar: AppBar(title: const Text('开发者设置')),
       body: _isLoading
@@ -93,97 +173,276 @@ class _DeveloperPageState extends State<DeveloperPage> {
           : ListView(
               padding: const EdgeInsets.all(16),
               children: [
-                TextField(
-                  controller: _apiUrlController,
-                  decoration: const InputDecoration(
-                    labelText: '服务器 API 地址',
-                    hintText: 'http://192.168.1.5:3001',
-                    border: OutlineInputBorder(),
-                  ),
-                  keyboardType: TextInputType.url,
-                ),
-                const SizedBox(height: 8),
-                const Text(
-                  '可填写服务器根地址，保存时会自动补全 /api/。',
-                  style: TextStyle(color: Colors.grey, fontSize: 12),
-                ),
-                const SizedBox(height: 16),
-                if (result != null)
-                  Container(
-                    width: double.infinity,
-                    padding: const EdgeInsets.all(12),
-                    decoration: BoxDecoration(
-                      color: result['success'] == true
-                          ? Colors.green.shade50
-                          : Colors.red.shade50,
-                      borderRadius: BorderRadius.circular(8),
-                      border: Border.all(
-                        color: result['success'] == true
-                            ? Colors.green.shade200
-                            : Colors.red.shade200,
-                      ),
-                    ),
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Text(
-                          result['success'] == true ? '连接成功' : '连接失败',
-                          style: TextStyle(
-                            fontWeight: FontWeight.bold,
-                            color: result['success'] == true
-                                ? Colors.green[700]
-                                : Colors.red[700],
-                          ),
-                        ),
-                        const SizedBox(height: 4),
-                        Text(
-                          '${result['message']}\n耗时: ${result['latency']}ms',
-                          style: TextStyle(
-                            fontSize: 12,
-                            color: result['success'] == true
-                                ? Colors.green[900]
-                                : Colors.red[900],
-                          ),
-                        ),
-                      ],
-                    ),
-                  ),
-                const SizedBox(height: 16),
-                Row(
+                _SettingsSection(
+                  title: '考试 API',
+                  icon: Icons.assignment,
+                  description: '题库、练习、考试、收藏和 AI 解析接口。',
                   children: [
-                    Expanded(
-                      child: OutlinedButton.icon(
-                        onPressed: _isTesting ? null : _testConnection,
-                        icon: _isTesting
-                            ? const SizedBox(
-                                width: 18,
-                                height: 18,
-                                child:
-                                    CircularProgressIndicator(strokeWidth: 2),
-                              )
-                            : const Icon(Icons.wifi_tethering),
-                        label: Text(_isTesting ? '测试中...' : '测试连接'),
+                    TextField(
+                      controller: _examApiUrlController,
+                      decoration: const InputDecoration(
+                        labelText: '考试 API 地址',
+                        hintText: 'http://192.168.1.5:3001',
+                        border: OutlineInputBorder(),
                       ),
+                      keyboardType: TextInputType.url,
                     ),
-                    const SizedBox(width: 12),
-                    Expanded(
+                    const SizedBox(height: 8),
+                    const _HelpText('可填写服务器根地址，保存时会自动补全 /api/。'),
+                    const SizedBox(height: 12),
+                    if (_examApiTestResult != null)
+                      _ConnectionResultPanel(result: _examApiTestResult!),
+                    if (_examApiTestResult != null) const SizedBox(height: 12),
+                    _ActionRow(
+                      testLabel: _isTestingExamApi ? '测试中...' : '测试考试 API',
+                      saveLabel: _isSavingExamApi ? '保存中...' : '保存考试 API',
+                      isTesting: _isTestingExamApi,
+                      isSaving: _isSavingExamApi,
+                      onTest: _testExamApiConnection,
+                      onSave: _saveExamApiUrl,
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 16),
+                _SettingsSection(
+                  title: 'beacon-api',
+                  icon: Icons.api,
+                  description: '频率表、卫星、QSO 与无线电工具接口。',
+                  children: [
+                    TextField(
+                      controller: _beaconApiUrlController,
+                      decoration: const InputDecoration(
+                        labelText: 'beacon-api 地址',
+                        hintText: 'http://192.168.1.5:3002',
+                        border: OutlineInputBorder(),
+                      ),
+                      keyboardType: TextInputType.url,
+                    ),
+                    const SizedBox(height: 8),
+                    const _HelpText('可填写服务器根地址，保存时会自动补全 /api/v1/。'),
+                    const SizedBox(height: 12),
+                    if (_beaconApiTestResult != null)
+                      _ConnectionResultPanel(result: _beaconApiTestResult!),
+                    if (_beaconApiTestResult != null)
+                      const SizedBox(height: 12),
+                    _ActionRow(
+                      testLabel:
+                          _isTestingBeaconApi ? '测试中...' : '测试 beacon-api',
+                      saveLabel:
+                          _isSavingBeaconApi ? '保存中...' : '保存 beacon-api',
+                      isTesting: _isTestingBeaconApi,
+                      isSaving: _isSavingBeaconApi,
+                      onTest: _testBeaconApiConnection,
+                      onSave: _saveBeaconApiUrl,
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 16),
+                _SettingsSection(
+                  title: '天地图',
+                  icon: Icons.map_outlined,
+                  description: 'GRID 地图定位页面的天地图底图 Token。',
+                  children: [
+                    TextField(
+                      controller: _tiandituTokenController,
+                      decoration: const InputDecoration(
+                        labelText: '天地图 Token',
+                        hintText: '请输入天地图 tk',
+                        border: OutlineInputBorder(),
+                      ),
+                      obscureText: true,
+                      enableSuggestions: false,
+                      autocorrect: false,
+                    ),
+                    const SizedBox(height: 8),
+                    const _HelpText('Token 仅保存在本机。留空保存会清空天地图配置。'),
+                    const SizedBox(height: 12),
+                    SizedBox(
+                      width: double.infinity,
                       child: FilledButton.icon(
-                        onPressed: _isSaving ? null : _saveApiUrl,
-                        icon: _isSaving
+                        onPressed:
+                            _isSavingTianditu ? null : _saveTiandituToken,
+                        icon: _isSavingTianditu
                             ? const SizedBox(
                                 width: 18,
                                 height: 18,
-                                child:
-                                    CircularProgressIndicator(strokeWidth: 2),
+                                child: CircularProgressIndicator(
+                                  strokeWidth: 2,
+                                ),
                               )
                             : const Icon(Icons.save),
-                        label: Text(_isSaving ? '保存中...' : '保存'),
+                        label: Text(_isSavingTianditu ? '保存中...' : '保存天地图'),
                       ),
                     ),
                   ],
                 ),
               ],
             ),
+    );
+  }
+}
+
+class _SettingsSection extends StatelessWidget {
+  final String title;
+  final IconData icon;
+  final String description;
+  final List<Widget> children;
+
+  const _SettingsSection({
+    required this.title,
+    required this.icon,
+    required this.description,
+    required this.children,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    return DecoratedBox(
+      decoration: BoxDecoration(
+        color: scheme.surfaceContainerLow,
+        borderRadius: BorderRadius.circular(8),
+        border: Border.all(color: scheme.outlineVariant),
+      ),
+      child: Padding(
+        padding: const EdgeInsets.all(14),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                Icon(icon, color: scheme.primary),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Text(
+                    title,
+                    style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                          fontWeight: FontWeight.w800,
+                        ),
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 4),
+            Text(
+              description,
+              style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                    color: scheme.onSurfaceVariant,
+                  ),
+            ),
+            const SizedBox(height: 14),
+            ...children,
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _HelpText extends StatelessWidget {
+  final String text;
+
+  const _HelpText(this.text);
+
+  @override
+  Widget build(BuildContext context) {
+    return Text(
+      text,
+      style: Theme.of(context).textTheme.bodySmall?.copyWith(
+            color: Theme.of(context).colorScheme.onSurfaceVariant,
+          ),
+    );
+  }
+}
+
+class _ActionRow extends StatelessWidget {
+  final String testLabel;
+  final String saveLabel;
+  final bool isTesting;
+  final bool isSaving;
+  final VoidCallback onTest;
+  final VoidCallback onSave;
+
+  const _ActionRow({
+    required this.testLabel,
+    required this.saveLabel,
+    required this.isTesting,
+    required this.isSaving,
+    required this.onTest,
+    required this.onSave,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Wrap(
+      spacing: 12,
+      runSpacing: 10,
+      children: [
+        SizedBox(
+          width: 180,
+          child: OutlinedButton.icon(
+            onPressed: isTesting ? null : onTest,
+            icon: isTesting
+                ? const SizedBox(
+                    width: 18,
+                    height: 18,
+                    child: CircularProgressIndicator(strokeWidth: 2),
+                  )
+                : const Icon(Icons.wifi_tethering),
+            label: Text(testLabel),
+          ),
+        ),
+        SizedBox(
+          width: 180,
+          child: FilledButton.icon(
+            onPressed: isSaving ? null : onSave,
+            icon: isSaving
+                ? const SizedBox(
+                    width: 18,
+                    height: 18,
+                    child: CircularProgressIndicator(strokeWidth: 2),
+                  )
+                : const Icon(Icons.save),
+            label: Text(saveLabel),
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+class _ConnectionResultPanel extends StatelessWidget {
+  final Map<String, dynamic> result;
+
+  const _ConnectionResultPanel({required this.result});
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    final success = result['success'] == true;
+    final color = success ? Colors.green : scheme.error;
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: color.withValues(alpha: 0.10),
+        borderRadius: BorderRadius.circular(8),
+        border: Border.all(color: color.withValues(alpha: 0.35)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            success ? '连接成功' : '连接失败',
+            style: TextStyle(fontWeight: FontWeight.bold, color: color),
+          ),
+          const SizedBox(height: 4),
+          Text(
+            '${result['message']}\n耗时: ${result['latency']}ms',
+            style: Theme.of(context).textTheme.bodySmall,
+          ),
+        ],
+      ),
     );
   }
 }

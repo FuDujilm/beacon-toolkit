@@ -2,16 +2,116 @@ import 'dart:convert';
 import 'dart:math';
 
 import 'package:dio/dio.dart';
+import 'package:latlng/latlng.dart';
+import 'package:orbit/orbit.dart';
 
 import '../models/discovery.dart';
 import 'local_database_service.dart';
+import 'satellite_api_service.dart';
 
 class SatelliteService {
   static const _tleCacheKey = 'satellite_tle_cache';
   static const _tleCacheTimeKey = 'satellite_tle_cache_time';
   static const _satnogsBaseUrl = 'https://db.satnogs.org/api';
   final _databaseService = LocalDatabaseService();
+  final _apiService = SatelliteApiService();
   final _dio = Dio(BaseOptions(connectTimeout: const Duration(seconds: 10)));
+  final bool _skipCache;
+
+  SatelliteService({bool skipCache = false}) : _skipCache = skipCache;
+
+  Future<List<SatelliteCatalogItem>> getSatelliteCatalog({
+    required List<String> tleSourceUrls,
+    List<String> subscribedNames = const [],
+  }) async {
+    final cached = await _refreshAndReadCatalog(
+      subscribedNames: subscribedNames,
+      limit: 200,
+    );
+    if (cached.isNotEmpty) return cached;
+
+    final entries = await _loadTleEntries(tleSourceUrls);
+    return entries
+        .map(
+          (entry) => SatelliteCatalogItem(
+            name: entry.name,
+            noradCatId: entry.noradCatId,
+            tleSource: _tleSourceLabel(tleSourceUrls),
+            subscribed: subscribedNames.any(
+              (name) => _matchesSatellite(entry.name, name),
+            ),
+          ),
+        )
+        .toList();
+  }
+
+  Future<List<SatelliteCatalogItem>> searchSatellites({
+    required String query,
+    required List<String> tleSourceUrls,
+    List<String> subscribedNames = const [],
+    int page = 1,
+    int limit = 50,
+  }) async {
+    final normalized = query.trim().toUpperCase();
+    final cached = await _refreshAndReadCatalog(
+      query: query,
+      subscribedNames: subscribedNames,
+      page: page,
+      limit: limit,
+    );
+    if (cached.isNotEmpty) return cached;
+
+    final catalog = await getSatelliteCatalog(
+      tleSourceUrls: tleSourceUrls,
+      subscribedNames: subscribedNames,
+    );
+    if (normalized.isEmpty) {
+      return catalog.take(limit).toList();
+    }
+    return catalog
+        .where((item) {
+          final name = item.name.toUpperCase();
+          final norad = item.noradCatId?.toString() ?? '';
+          return name.contains(normalized) || norad.contains(normalized);
+        })
+        .take(limit)
+        .toList();
+  }
+
+  Future<List<SatelliteMapItem>> getSubscribedSatelliteMapItems({
+    required ObserverLocation observer,
+    required List<String> tleSourceUrls,
+    required List<String> satelliteNames,
+    Duration window = const Duration(hours: 72),
+  }) async {
+    final names = satelliteNames.isEmpty
+        ? const ['ISS (ZARYA)', 'AO-91', 'SO-50', 'PO-101']
+        : satelliteNames;
+    final entries = await _loadTleEntries(tleSourceUrls);
+    final now = DateTime.now();
+    final passes = await getUpcomingPasses(
+      observer: observer,
+      tleSourceUrls: tleSourceUrls,
+      satelliteNames: names,
+      window: window,
+    );
+
+    return names.map((name) {
+      final entry = _findEntry(entries, name);
+      final matchedPasses = passes
+          .where((pass) => _matchesSatellite(pass.satelliteName, name))
+          .toList();
+      return SatelliteMapItem(
+        name: entry?.name ?? name,
+        noradCatId: entry?.noradCatId,
+        nextPass: matchedPasses.isEmpty ? null : matchedPasses.first,
+        currentPosition: entry == null ? null : _positionAt(entry, now),
+        groundTrack: entry == null
+            ? const []
+            : _groundTrack(entry, now, const Duration(minutes: 110)),
+      );
+    }).toList();
+  }
 
   Future<List<SatelliteSummary>> getSubscribedSatellites({
     required String grid,
@@ -22,23 +122,43 @@ class SatelliteService {
     final names = satelliteNames.isEmpty
         ? const ['ISS (ZARYA)', 'AO-91', 'SO-50', 'PO-101']
         : satelliteNames;
+    final observer = observerFromGrid(grid);
+    if (observer == null) {
+      throw const FormatException('请先在我的资料中设置有效 Grid，例如 OM89dw');
+    }
     final passes = await getUpcomingPasses(
-      grid: grid,
+      observer: observer,
       tleSourceUrls: tleSourceUrls,
       satelliteNames: names,
       window: window,
+    );
+    await _refreshAndReadCatalog(
+      subscribedNames: satelliteNames,
+      limit: 200,
     );
     final entries = await _loadTleEntries(tleSourceUrls);
     final summaries = <SatelliteSummary>[];
 
     for (final name in names) {
       final matchedEntry = _findEntry(entries, name);
+      final catalogQuery = matchedEntry?.noradCatId?.toString() ?? name;
+      await _refreshAndReadCatalog(
+        query: catalogQuery,
+        subscribedNames: satelliteNames,
+        limit: 20,
+      );
+      final catalogItem =
+          await _databaseService.getCachedSatelliteByNameOrNorad(
+        name: matchedEntry?.name ?? name,
+        noradCatId: matchedEntry?.noradCatId,
+      );
       final matchedPasses = passes
           .where((pass) => _matchesSatellite(pass.satelliteName, name))
           .toList();
       summaries.add(SatelliteSummary(
         name: matchedEntry?.name ?? name,
         noradCatId: matchedEntry?.noradCatId,
+        catalogItem: catalogItem,
         nextPass: matchedPasses.isEmpty ? null : matchedPasses.first,
         upcomingPassCount: matchedPasses.length,
         tleSource: _tleSourceLabel(tleSourceUrls),
@@ -49,33 +169,68 @@ class SatelliteService {
 
   Future<SatelliteDetail> getSatelliteDetail({
     required String grid,
+    ObserverLocation? observer,
     required List<String> tleSourceUrls,
     required String satelliteName,
     Duration window = const Duration(hours: 72),
   }) async {
+    final resolvedObserver = observer ?? observerFromGrid(grid);
+    if (resolvedObserver == null) {
+      throw const FormatException('请先在我的资料中设置有效 Grid，例如 OM89dw');
+    }
     final passes = await getUpcomingPasses(
-      grid: grid,
+      observer: resolvedObserver,
       tleSourceUrls: tleSourceUrls,
       satelliteNames: [satelliteName],
       window: window,
     );
     final entries = await _loadTleEntries(tleSourceUrls);
     final entry = _findEntry(entries, satelliteName);
+    final now = DateTime.now();
+    final groundTrack = entry == null
+        ? const <GroundTrackPoint>[]
+        : _groundTrack(entry, now, const Duration(minutes: 110));
+    final currentPosition = entry == null ? null : _positionAt(entry, now);
+    final noradCatId =
+        entry?.noradCatId ?? (passes.isEmpty ? null : passes.first.noradCatId);
     final transponders = await getTransponders(
       satelliteName: entry?.name ?? satelliteName,
-      noradCatId: entry?.noradCatId ??
-          (passes.isEmpty ? null : passes.first.noradCatId),
+      noradCatId: noradCatId,
     );
+    var apiStatusSummaries = const <SatelliteStatusSummary>[];
+    var catalogItem = await _resolveCatalogItem(
+      name: entry?.name ?? satelliteName,
+      noradCatId: noradCatId,
+    );
+    if (catalogItem?.id != null) {
+      try {
+        final detail = await _apiService.getSatelliteDetail(catalogItem!.id!);
+        catalogItem = detail.satellite;
+        await _databaseService.cacheSatelliteCatalog([detail.satellite]);
+        await _databaseService.cacheSatelliteDetail(
+          satelliteId: detail.satellite.id!,
+          transponders: detail.transponders,
+          statusSummaries: detail.statusSummaries,
+        );
+        apiStatusSummaries = detail.statusSummaries;
+      } catch (_) {
+        apiStatusSummaries = await _databaseService
+            .getCachedSatelliteStatusSummaries(catalogItem!.id!);
+      }
+    }
     return SatelliteDetail(
       name: entry?.name ?? satelliteName,
-      noradCatId: entry?.noradCatId ??
-          (passes.isEmpty ? null : passes.first.noradCatId),
+      noradCatId: noradCatId,
+      catalogItem: catalogItem,
       passes: passes,
       transponders: transponders,
+      statusSummaries: apiStatusSummaries,
       tleSource: _tleSourceLabel(tleSourceUrls),
       tleUpdatedAt: DateTime.tryParse(
         await _databaseService.getSetting(_tleCacheTimeKey) ?? '',
       ),
+      currentPosition: currentPosition,
+      groundTrack: groundTrack,
     );
   }
 
@@ -83,6 +238,28 @@ class SatelliteService {
     required String satelliteName,
     int? noradCatId,
   }) async {
+    final cachedSatellite = await _resolveCatalogItem(
+      name: satelliteName,
+      noradCatId: noradCatId,
+    );
+    if (cachedSatellite?.id != null) {
+      try {
+        final detail =
+            await _apiService.getSatelliteDetail(cachedSatellite!.id!);
+        await _databaseService.cacheSatelliteCatalog([detail.satellite]);
+        await _databaseService.cacheSatelliteDetail(
+          satelliteId: detail.satellite.id!,
+          transponders: detail.transponders,
+          statusSummaries: detail.statusSummaries,
+        );
+        if (detail.transponders.isNotEmpty) return detail.transponders;
+      } catch (_) {
+        final cached = await _databaseService
+            .getCachedSatelliteTransponders(cachedSatellite!.id!);
+        if (cached.isNotEmpty) return cached;
+      }
+    }
+
     if (noradCatId != null) {
       try {
         final response = await _dio.get<List<dynamic>>(
@@ -103,17 +280,68 @@ class SatelliteService {
     return _fallbackTransponders(satelliteName);
   }
 
+  Future<SatelliteCatalogItem?> _resolveCatalogItem({
+    required String name,
+    int? noradCatId,
+  }) async {
+    final query = noradCatId?.toString() ?? name;
+    final remote = await _refreshAndReadCatalog(
+      query: query,
+      subscribedNames: const [],
+      limit: 20,
+    );
+    for (final item in remote) {
+      if ((noradCatId != null && item.noradCatId == noradCatId) ||
+          _matchesSatellite(item.name, name)) {
+        return item;
+      }
+    }
+    return _databaseService.getCachedSatelliteByNameOrNorad(
+      name: name,
+      noradCatId: noradCatId,
+    );
+  }
+
+  Future<List<SatelliteCatalogItem>> _refreshAndReadCatalog({
+    String? query,
+    required List<String> subscribedNames,
+    int page = 1,
+    required int limit,
+  }) async {
+    if (_skipCache) return const [];
+
+    try {
+      final remote = await _apiService.listSatellites(
+        query: query,
+        page: page,
+        pageSize: max(limit, 200),
+      );
+      if (remote.isNotEmpty) {
+        await _databaseService.cacheSatelliteCatalog(remote);
+      }
+    } catch (_) {
+      // Offline and misconfigured API cases fall back to local cache/TLE.
+    }
+    final cached = await _databaseService.getCachedSatelliteCatalog(
+      query: query,
+      offset: (page - 1) * limit,
+      limit: limit,
+    );
+    return cached
+        .map((item) => item.copyWith(
+              subscribed: subscribedNames.any(
+                (name) => _matchesSatellite(item.name, name),
+              ),
+            ))
+        .toList();
+  }
+
   Future<List<SatellitePass>> getUpcomingPasses({
-    required String grid,
+    required ObserverLocation observer,
     required List<String> tleSourceUrls,
     required List<String> satelliteNames,
     Duration window = const Duration(hours: 48),
   }) async {
-    final location = _gridToLatLon(grid);
-    if (location == null) {
-      throw const FormatException('请先在我的资料中设置有效 Grid，例如 OM89dw');
-    }
-
     final entries = await _loadTleEntries(tleSourceUrls);
     final nameFilters =
         satelliteNames.map((item) => item.toUpperCase()).toList();
@@ -127,10 +355,21 @@ class SatelliteService {
     final until = now.add(window);
     final passes = <SatellitePass>[];
     for (final entry in selected.take(16)) {
-      passes.addAll(_predictPasses(entry, location, now, until));
+      passes.addAll(_predictPasses(entry, observer, now, until));
     }
     passes.sort((a, b) => a.aos.compareTo(b.aos));
     return passes.take(40).toList();
+  }
+
+  ObserverLocation? observerFromGrid(String grid) {
+    final location = _gridToLatLon(grid);
+    if (location == null) return null;
+    return ObserverLocation(
+      latitude: location.latitude,
+      longitude: location.longitude,
+      label: grid.trim().toUpperCase(),
+      source: 'Grid',
+    );
   }
 
   Future<List<_TleEntry>> _loadTleEntries(List<String> urls) async {
@@ -141,16 +380,18 @@ class SatelliteService {
         final data = response.data;
         if (data != null && data.trim().isNotEmpty) {
           raw = data;
-          await _databaseService.saveSetting(_tleCacheKey, raw);
-          await _databaseService.saveSetting(
-              _tleCacheTimeKey, DateTime.now().toIso8601String());
+          if (!_skipCache) {
+            await _databaseService.saveSetting(_tleCacheKey, raw);
+            await _databaseService.saveSetting(
+                _tleCacheTimeKey, DateTime.now().toIso8601String());
+          }
           break;
         }
       } catch (_) {
         // Keep trying the next source; cached TLE is used below.
       }
     }
-    raw ??= await _databaseService.getSetting(_tleCacheKey);
+    raw ??= _skipCache ? null : await _databaseService.getSetting(_tleCacheKey);
     if (raw == null || raw.trim().isEmpty) {
       raw = _fallbackTle;
     }
@@ -169,16 +410,12 @@ class SatelliteService {
       final line1 = lines[index + 1];
       final line2 = lines[index + 2];
       if (!line1.startsWith('1 ') || !line2.startsWith('2 ')) continue;
-      final inclination = double.tryParse(_slice(line2, 8, 16).trim()) ?? 51.6;
-      final meanMotion = double.tryParse(_slice(line2, 52, 63).trim()) ?? 15.5;
       final noradCatId = int.tryParse(_slice(line1, 2, 7).trim());
       entries.add(_TleEntry(
         name: name,
         line1: line1,
         line2: line2,
         noradCatId: noradCatId,
-        inclination: inclination,
-        meanMotion: meanMotion,
       ));
       index += 2;
     }
@@ -187,47 +424,134 @@ class SatelliteService {
 
   List<SatellitePass> _predictPasses(
     _TleEntry entry,
-    _GeoPoint observer,
+    ObserverLocation observer,
     DateTime start,
     DateTime until,
   ) {
-    final periodMinutes = 1440 / entry.meanMotion.clamp(1, 16.5);
-    final phaseSeed =
-        entry.name.codeUnits.fold<int>(0, (sum, char) => sum + char);
-    final startMinutes = start.millisecondsSinceEpoch / 60000;
-    final firstOffset =
-        (periodMinutes - ((startMinutes + phaseSeed) % periodMinutes))
-            .clamp(8, periodMinutes);
+    final satellite = entry.toTle();
+    final sgp = SGP4(satellite.keplerianElements, wgs84);
+    final period = sgp.periodInMinutes ?? 100;
+    final orbitCount =
+        max(2, (until.difference(start).inMinutes / period).ceil() + 2);
+    final orbitIndexes = List<int>.generate(orbitCount, (index) => index);
+    final orbitPasses = Pass.predict(
+      wgs84,
+      _toLatLngAlt(observer),
+      sgp.propagate(start.toUtc(), orbitIndexes),
+    );
     final passes = <SatellitePass>[];
-    var aos = start.add(Duration(minutes: firstOffset.round()));
-    final observerBias = (90 - observer.latitude.abs()).clamp(5, 90);
+    final now = DateTime.now();
 
-    while (aos.isBefore(until)) {
-      final cycle = ((aos.millisecondsSinceEpoch ~/ 60000) + phaseSeed) % 360;
-      final latitudeFactor =
-          max(0, 1 - (observer.latitude.abs() / max(entry.inclination, 1.0)));
-      final maxElevation = (12 +
-              observerBias * latitudeFactor * 0.62 +
-              18 * sin(cycle * pi / 180))
-          .clamp(4, 88)
-          .toDouble();
-      if (maxElevation >= 8) {
-        final durationMinutes = (7 + maxElevation / 5).round().clamp(6, 22);
-        final aosAzimuth = (cycle + observer.longitude + 360) % 360;
-        passes.add(SatellitePass(
-          satelliteName: entry.name,
-          noradCatId: entry.noradCatId,
-          aos: aos,
-          los: aos.add(Duration(minutes: durationMinutes)),
-          maxElevation: maxElevation,
-          aosAzimuth: aosAzimuth.toDouble(),
-          losAzimuth: ((aosAzimuth + 160) % 360).toDouble(),
-          source: 'TLE 本地近似',
-        ));
-      }
-      aos = aos.add(Duration(minutes: periodMinutes.round()));
+    for (final pass in orbitPasses) {
+      if (pass.points.isEmpty) continue;
+      final aos = pass.points.first.point.time.toDateTime().toLocal();
+      final los = pass.points.last.point.time.toDateTime().toLocal();
+      if (los.isBefore(start) || aos.isAfter(until)) continue;
+
+      final samples = pass.points.map(_toLookSample).toList();
+      final activeSample = _nearestSample(samples, now);
+      passes.add(SatellitePass(
+        satelliteName: entry.name,
+        noradCatId: entry.noradCatId,
+        aos: aos,
+        los: los,
+        maxElevationAt: pass.max.point.time.toDateTime().toLocal(),
+        maxElevation: pass.max.lookAngle.elevation.degrees,
+        aosAzimuth: pass.points.first.lookAngle.azimuth.degrees,
+        losAzimuth: pass.points.last.lookAngle.azimuth.degrees,
+        currentElevation: activeSample?.elevation,
+        currentAzimuth: activeSample?.azimuth,
+        currentRangeKm: activeSample?.rangeKm,
+        dopplerFactor: pass.max.dopplerFactor,
+        source: 'TLE SGP4',
+        lookSamples: samples,
+        trackPoints: samples.map((sample) => sample.groundPoint).toList(),
+      ));
     }
     return passes;
+  }
+
+  GroundTrackPoint? _positionAt(_TleEntry entry, DateTime time) {
+    final satellite = entry.toTle();
+    final sgp = SGP4(satellite.keplerianElements, wgs84);
+    final state = sgp.getPositionByDateTime(time.toUtc());
+    final geodetic = state.r.toGeodeticByDateTime(wgs84, time.toUtc());
+    return GroundTrackPoint(
+      time: time,
+      latitude: geodetic.latitude.degrees,
+      longitude: _normalizeLongitude(geodetic.longitude.degrees),
+      altitudeKm: geodetic.altitude,
+    );
+  }
+
+  List<GroundTrackPoint> _groundTrack(
+    _TleEntry entry,
+    DateTime start,
+    Duration window,
+  ) {
+    final satellite = entry.toTle();
+    final sgp = SGP4(satellite.keplerianElements, wgs84);
+    final points = <GroundTrackPoint>[];
+    for (var minutes = 0; minutes <= window.inMinutes; minutes += 3) {
+      final time = start.add(Duration(minutes: minutes));
+      final state = sgp.getPositionByDateTime(time.toUtc());
+      final geodetic = state.r.toGeodeticByDateTime(wgs84, time.toUtc());
+      points.add(GroundTrackPoint(
+        time: time,
+        latitude: geodetic.latitude.degrees,
+        longitude: _normalizeLongitude(geodetic.longitude.degrees),
+        altitudeKm: geodetic.altitude,
+      ));
+    }
+    return points;
+  }
+
+  SatelliteLookSample _toLookSample(PassPoint point) {
+    final location = point.point.location;
+    return SatelliteLookSample(
+      time: point.point.time.toDateTime().toLocal(),
+      elevation: point.lookAngle.elevation.degrees,
+      azimuth: point.lookAngle.azimuth.degrees,
+      rangeKm: point.lookAngle.range,
+      groundPoint: GroundTrackPoint(
+        time: point.point.time.toDateTime().toLocal(),
+        latitude: location.latitude.degrees,
+        longitude: _normalizeLongitude(location.longitude.degrees),
+        altitudeKm: location.altitude,
+      ),
+    );
+  }
+
+  SatelliteLookSample? _nearestSample(
+    List<SatelliteLookSample> samples,
+    DateTime target,
+  ) {
+    if (samples.isEmpty) return null;
+    SatelliteLookSample? nearest;
+    var nearestDelta = 1 << 62;
+    for (final sample in samples) {
+      final delta = sample.time.difference(target).inSeconds.abs();
+      if (delta < nearestDelta) {
+        nearestDelta = delta;
+        nearest = sample;
+      }
+    }
+    return nearestDelta <= 180 ? nearest : null;
+  }
+
+  LatLngAlt _toLatLngAlt(ObserverLocation observer) {
+    return LatLngAlt(
+      Angle.degree(observer.latitude),
+      Angle.degree(observer.longitude),
+      observer.altitudeKm,
+    );
+  }
+
+  double _normalizeLongitude(double longitude) {
+    var value = longitude % 360;
+    if (value > 180) value -= 360;
+    if (value < -180) value += 360;
+    return value;
   }
 
   _GeoPoint? _gridToLatLon(String grid) {
@@ -268,7 +592,22 @@ class SatelliteService {
   bool _matchesSatellite(String sourceName, String filter) {
     final source = sourceName.toUpperCase();
     final target = filter.toUpperCase();
-    return source.contains(target) || target.contains(source);
+    final normalizedSource = _normalizeSatelliteName(sourceName);
+    final normalizedTarget = _normalizeSatelliteName(filter);
+    return source.contains(target) ||
+        target.contains(source) ||
+        normalizedSource.contains(normalizedTarget) ||
+        normalizedTarget.contains(normalizedSource);
+  }
+
+  String _normalizeSatelliteName(String value) {
+    return value
+        .toUpperCase()
+        .replaceAll('(ZARYA)', '')
+        .replaceAll(RegExp(r'[_\-\[\]/()]'), ' ')
+        .split(RegExp(r'\s+'))
+        .where((part) => part.isNotEmpty)
+        .join(' ');
   }
 
   String _tleSourceLabel(List<String> urls) {
@@ -343,17 +682,15 @@ class _TleEntry {
   final String line1;
   final String line2;
   final int? noradCatId;
-  final double inclination;
-  final double meanMotion;
 
   const _TleEntry({
     required this.name,
     required this.line1,
     required this.line2,
     this.noradCatId,
-    required this.inclination,
-    required this.meanMotion,
   });
+
+  TwoLineElement toTle() => TwoLineElement.parse('$name\n$line1\n$line2');
 }
 
 const _fallbackTle = '''

@@ -181,6 +181,32 @@ jobs:
       - name: Install dependencies
         run: flutter pub get
 
+      - name: Patch desktop_webview_window Linux cookie expiry
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import os
+          from pathlib import Path
+
+          pub_cache = Path(os.environ.get("PUB_CACHE", Path.home() / ".pub-cache"))
+          paths = list(pub_cache.glob("hosted/*/desktop_webview_window-*/linux/webview_window.cc"))
+          if not paths:
+              raise SystemExit("desktop_webview_window linux/webview_window.cc not found")
+
+          old = "    gdouble expires = g_date_time_get_seconds(soup_cookie_get_expires(cookie));"
+          new = """    GDateTime *expires_at = soup_cookie_get_expires(cookie);
+              gdouble expires = expires_at == nullptr ? -1 : g_date_time_to_unix(expires_at);"""
+
+          for path in paths:
+              text = path.read_text()
+              if old not in text:
+                  print(f"Patch target not found in {path}; skipping")
+                  continue
+              path.write_text(text.replace(old, new))
+              print(f"Patched {path}")
+          PY
+
       - name: Build Linux
         run: flutter build linux --release
 

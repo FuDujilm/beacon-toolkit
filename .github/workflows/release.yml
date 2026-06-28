@@ -218,13 +218,14 @@ jobs:
 
               cmake = plugin_dir / "CMakeLists.txt"
               cmake_text = cmake.read_text()
+              cmake_text = cmake_text.replace("\\ntarget_link_libraries", "\ntarget_link_libraries")
               link_line = "target_link_libraries(${PLUGIN_NAME} PRIVATE PkgConfig::LibSoup)"
               if link_line not in cmake_text:
                   cmake_text = cmake_text.replace(
                       "target_link_libraries(${PLUGIN_NAME} PRIVATE PkgConfig::WebKit)",
-                      "target_link_libraries(${PLUGIN_NAME} PRIVATE PkgConfig::WebKit)\\n" + link_line,
+                      "target_link_libraries(${PLUGIN_NAME} PRIVATE PkgConfig::WebKit)\n" + link_line,
                   )
-                  cmake.write_text(cmake_text)
+              cmake.write_text(cmake_text)
 
               print(f"Patched {plugin_dir}")
           PY

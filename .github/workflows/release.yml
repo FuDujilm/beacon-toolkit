@@ -158,7 +158,7 @@ jobs:
 
   build-linux:
     name: Build Linux
-    runs-on: ubuntu-22.04
+    runs-on: ubuntu-24.04
     needs: prepare
     steps:
       - name: Checkout
@@ -167,7 +167,7 @@ jobs:
       - name: Install Linux build dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y clang cmake libgtk-3-dev liblzma-dev libsqlite3-dev libsoup-3.0-dev libwebkit2gtk-4.0-dev ninja-build pkg-config zip
+          sudo apt-get install -y clang cmake libgtk-3-dev liblzma-dev libsqlite3-dev libsoup-3.0-dev libwebkit2gtk-4.1-dev ninja-build pkg-config zip
 
       - name: Setup Flutter
         uses: subosito/flutter-action@v2
@@ -190,21 +190,43 @@ jobs:
           from pathlib import Path
 
           pub_cache = Path(os.environ.get("PUB_CACHE", Path.home() / ".pub-cache"))
-          paths = list(pub_cache.glob("hosted/*/desktop_webview_window-*/linux/webview_window.cc"))
-          if not paths:
-              raise SystemExit("desktop_webview_window linux/webview_window.cc not found")
+          plugin_dirs = [path.parent for path in pub_cache.glob("hosted/*/desktop_webview_window-*/linux/webview_window.cc")]
+          if not plugin_dirs:
+              raise SystemExit("desktop_webview_window linux plugin not found")
 
-          old = "    gdouble expires = g_date_time_get_seconds(soup_cookie_get_expires(cookie));"
-          new = """    GDateTime *expires_at = soup_cookie_get_expires(cookie);
-              gdouble expires = expires_at == nullptr ? -1 : g_date_time_to_unix(expires_at);"""
+          gdatetime_patch = "\n".join([
+              "    GDateTime *expires_at = soup_cookie_get_expires(cookie);",
+              "    gdouble expires = expires_at == nullptr ? -1 : g_date_time_to_unix(expires_at);",
+          ])
+          soupdate_patch = "\n".join([
+              "    SoupDate *expires_at = soup_cookie_get_expires(cookie);",
+              "    gdouble expires = expires_at == nullptr ? -1 : soup_date_to_time_t(expires_at);",
+          ])
+          patterns = [
+              "    gdouble expires = g_date_time_get_seconds(soup_cookie_get_expires(cookie));",
+              gdatetime_patch,
+              soupdate_patch,
+          ]
+          replacement = gdatetime_patch
 
-          for path in paths:
-              text = path.read_text()
-              if old not in text:
-                  print(f"Patch target not found in {path}; skipping")
-                  continue
-              path.write_text(text.replace(old, new))
-              print(f"Patched {path}")
+          for plugin_dir in plugin_dirs:
+              source = plugin_dir / "webview_window.cc"
+              text = source.read_text()
+              for pattern in patterns:
+                  text = text.replace(pattern, replacement)
+              source.write_text(text)
+
+              cmake = plugin_dir / "CMakeLists.txt"
+              cmake_text = cmake.read_text()
+              link_line = "target_link_libraries(${PLUGIN_NAME} PRIVATE PkgConfig::LibSoup)"
+              if link_line not in cmake_text:
+                  cmake_text = cmake_text.replace(
+                      "target_link_libraries(${PLUGIN_NAME} PRIVATE PkgConfig::WebKit)",
+                      "target_link_libraries(${PLUGIN_NAME} PRIVATE PkgConfig::WebKit)\\n" + link_line,
+                  )
+                  cmake.write_text(cmake_text)
+
+              print(f"Patched {plugin_dir}")
           PY
 
       - name: Build Linux

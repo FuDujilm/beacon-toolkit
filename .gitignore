@@ -62,3 +62,21 @@
 # Exceptions to above rules.
 !/android/app/src/main/AndroidManifest.xml
 !/ios/Runner.xcodeproj/project.pbxproj
+
+# Secrets and local release credentials
+.env
+.env.*
+!.env.example
+!.env.*.example
+**/key.properties
+**/keystore.properties
+**/*.jks
+**/*.keystore
+**/*.p12
+**/*.p8
+**/*.pem
+**/*.mobileprovision
+**/*.provisionprofile
+**/GoogleService-Info.plist
+**/google-services.json
+**/firebase_options.dart

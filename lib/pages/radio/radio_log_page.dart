@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:dio/dio.dart';
 
 import '../../models/exam_result.dart';
 import '../../models/practice_history.dart';
@@ -25,6 +26,7 @@ class _RadioLogPageState extends State<RadioLogPage> {
   DateTime _selectedDate = DateTime.now();
   int _selectedTab = 0;
   bool _isLoading = true;
+  bool _studySyncWarning = false;
   Map<String, dynamic> _studyCalendar = {};
   List<PracticeSession> _practiceSessions = [];
   List<ExamResult> _examResults = [];
@@ -37,44 +39,100 @@ class _RadioLogPageState extends State<RadioLogPage> {
   }
 
   Future<void> _loadLogs() async {
-    setState(() => _isLoading = true);
+    setState(() {
+      _isLoading = true;
+      _studySyncWarning = false;
+    });
     final monthStart = DateTime(_focusedMonth.year, _focusedMonth.month, 1);
     final monthEnd = DateTime(_focusedMonth.year, _focusedMonth.month + 1, 0);
 
-    try {
-      final results = await Future.wait([
-        _settingsService.getStudyCalendar(
-          _dateKey(monthStart),
-          _dateKey(monthEnd),
-        ),
-        _questionService.getPracticeSessions(limit: 60),
-        _examService.getExamHistory(),
-        _databaseService.getQsoLogs(),
-      ]);
+    var studySyncWarning = false;
+    var studyMap = <String, dynamic>{};
+    var practiceSessions = <PracticeSession>[];
+    var examResults = <ExamResult>[];
+    var qsoLogs = <QsoLog>[];
 
-      final studyMap = <String, dynamic>{};
-      for (final record in results[0] as List<Map<String, dynamic>>) {
+    try {
+      qsoLogs = await _databaseService.getQsoLogs();
+    } catch (error) {
+      debugPrint('Failed to load local QSO logs: ${_friendlyLoadError(error)}');
+    }
+
+    try {
+      final records = await _settingsService.getStudyCalendar(
+        _dateKey(monthStart),
+        _dateKey(monthEnd),
+      );
+      for (final record in records) {
         final date = record['date'];
         if (date != null) {
           studyMap[date.toString().split('T').first] = record;
         }
       }
-
-      if (!mounted) return;
-      setState(() {
-        _studyCalendar = studyMap;
-        _practiceSessions = results[1] as List<PracticeSession>;
-        _examResults = results[2] as List<ExamResult>;
-        _qsoLogs = results[3] as List<QsoLog>;
-        _isLoading = false;
-      });
     } catch (error) {
-      if (!mounted) return;
-      setState(() => _isLoading = false);
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('日志加载失败: $error')),
-      );
+      studySyncWarning = true;
+      debugPrint('Failed to sync study calendar: ${_friendlyLoadError(error)}');
     }
+
+    try {
+      practiceSessions = await _questionService.getPracticeSessions(limit: 60);
+    } catch (error) {
+      studySyncWarning = true;
+      debugPrint(
+          'Failed to sync practice history: ${_friendlyLoadError(error)}');
+    }
+
+    try {
+      examResults = await _examService.getExamHistory();
+    } catch (error) {
+      studySyncWarning = true;
+      debugPrint('Failed to sync exam history: ${_friendlyLoadError(error)}');
+    }
+
+    if (!mounted) return;
+    setState(() {
+      _studyCalendar = studyMap;
+      _practiceSessions = practiceSessions;
+      _examResults = examResults;
+      _qsoLogs = qsoLogs;
+      _studySyncWarning = studySyncWarning;
+      _isLoading = false;
+    });
+  }
+
+  String _friendlyLoadError(Object error) {
+    if (error is DioException) {
+      final statusCode = error.response?.statusCode;
+      if (statusCode != null) return 'API $statusCode';
+      if (error.type == DioExceptionType.connectionTimeout ||
+          error.type == DioExceptionType.receiveTimeout ||
+          error.type == DioExceptionType.sendTimeout) {
+        return 'API 超时';
+      }
+      if (error.type == DioExceptionType.connectionError) return 'API 不可用';
+    }
+    final message = error.toString();
+    final statusMatch = RegExp(r'status code of (\d{3})').firstMatch(message) ??
+        RegExp(r'\bHTTP[ /](\d{3})\b', caseSensitive: false)
+            .firstMatch(message) ??
+        RegExp(r'\bAPI[ :](\d{3})\b', caseSensitive: false).firstMatch(message);
+    if (statusMatch != null) return 'API ${statusMatch.group(1)}';
+    if (message.contains('TimeoutException') ||
+        message.toLowerCase().contains('timeout')) {
+      return 'API 超时';
+    }
+    if (message.contains('SocketException') ||
+        message.contains('Connection refused') ||
+        message.contains('Failed host lookup') ||
+        message.contains('Network is unreachable')) {
+      return 'API 不可用';
+    }
+    final cleanMessage = message
+        .replaceFirst(RegExp(r'^(Exception|Error):\s*'), '')
+        .replaceAll('\n', ' ');
+    return cleanMessage.length > 40
+        ? '${cleanMessage.substring(0, 40)}...'
+        : cleanMessage;
   }
 
   Future<void> _openAddQsoSheet() async {
@@ -115,36 +173,40 @@ class _RadioLogPageState extends State<RadioLogPage> {
     final studyCount = _practiceSessions.length + _examResults.length;
 
     return Scaffold(
-      floatingActionButton: FloatingActionButton.extended(
-        onPressed: _openAddQsoSheet,
-        icon: const Icon(Icons.add),
-        label: const Text('添加通联'),
+      floatingActionButton: Padding(
+        padding: const EdgeInsets.only(right: 2, bottom: 12),
+        child: FloatingActionButton.extended(
+          onPressed: _openAddQsoSheet,
+          icon: const Icon(Icons.add),
+          label: const Text('添加通联'),
+        ),
       ),
+      floatingActionButtonLocation: FloatingActionButtonLocation.endFloat,
       body: RefreshIndicator(
         onRefresh: _loadLogs,
         child: ListView(
-          padding: const EdgeInsets.fromLTRB(18, 48, 18, 118),
+          padding: const EdgeInsets.fromLTRB(18, 42, 18, 138),
           children: [
             _HeroHeader(
               qsoCount: qsoCount,
               studyCount: studyCount,
-              onAddQso: _openAddQsoSheet,
             ),
-            const SizedBox(height: 16),
+            const SizedBox(height: 12),
             _CalendarPanel(
               focusedMonth: _focusedMonth,
               selectedDate: _selectedDate,
               studyCalendar: _studyCalendar,
               qsoLogs: _qsoLogs,
+              hasSyncWarning: _studySyncWarning,
               onMonthChanged: _changeMonth,
               onDateSelected: (date) => setState(() => _selectedDate = date),
             ),
-            const SizedBox(height: 16),
+            const SizedBox(height: 12),
             _SegmentedTabs(
               selectedIndex: _selectedTab,
               onChanged: (index) => setState(() => _selectedTab = index),
             ),
-            const SizedBox(height: 16),
+            const SizedBox(height: 12),
             if (_isLoading)
               const Padding(
                 padding: EdgeInsets.only(top: 56),
@@ -159,22 +221,38 @@ class _RadioLogPageState extends State<RadioLogPage> {
   }
 
   List<Widget> _buildSelectedTab() {
-    return switch (_selectedTab) {
-      0 => _buildQsoSection(),
-      1 => _buildStudySection(),
-      _ => [
-          ..._buildQsoSection(),
-          const SizedBox(height: 18),
-          ..._buildStudySection(),
-        ],
-    };
-  }
-
-  List<Widget> _buildQsoSection() {
     final selectedLogs = _qsoLogs
         .where((log) => DateUtils.isSameDay(log.date, _selectedDate))
         .toList();
+    final selectedSessions = _selectedPracticeSessions();
+    final selectedExams = _selectedExamResults();
 
+    return switch (_selectedTab) {
+      0 => _buildQsoSection(selectedLogs),
+      1 => _buildStudySection(selectedSessions, selectedExams),
+      _ => _buildAllSection(selectedLogs, selectedSessions, selectedExams),
+    };
+  }
+
+  List<PracticeSession> _selectedPracticeSessions() {
+    return _practiceSessions
+        .where((session) => DateUtils.isSameDay(
+              session.lastAnsweredAt.toLocal(),
+              _selectedDate,
+            ))
+        .toList();
+  }
+
+  List<ExamResult> _selectedExamResults() {
+    return _examResults
+        .where((exam) => DateUtils.isSameDay(
+              exam.createdAt.toLocal(),
+              _selectedDate,
+            ))
+        .toList();
+  }
+
+  List<Widget> _buildQsoSection(List<QsoLog> selectedLogs) {
     return [
       _DayHeader(
         date: _selectedDate,
@@ -182,38 +260,30 @@ class _RadioLogPageState extends State<RadioLogPage> {
       ),
       const SizedBox(height: 10),
       if (selectedLogs.isEmpty)
-        _EmptyStateCard(
+        const _EmptyStateCard(
           icon: Icons.radio,
           title: '当天暂无通联',
-          subtitle: '点击右下角“添加通联”记录呼号、频率、模式和信号报告。',
-          actionLabel: '添加通联',
-          onAction: _openAddQsoSheet,
+          subtitle: '点击右下角 + 添加通联记录呼号、频率、模式和信号报告。',
         )
       else
         ...selectedLogs.map((log) => _QsoLogCard(log: log)),
     ];
   }
 
-  List<Widget> _buildStudySection() {
-    final selectedSessions = _practiceSessions
-        .where((session) => DateUtils.isSameDay(
-              session.lastAnsweredAt.toLocal(),
-              _selectedDate,
-            ))
-        .toList();
-    final selectedExams = _examResults
-        .where((exam) => DateUtils.isSameDay(
-              exam.createdAt.toLocal(),
-              _selectedDate,
-            ))
-        .toList();
-
+  List<Widget> _buildStudySection(
+    List<PracticeSession> selectedSessions,
+    List<ExamResult> selectedExams,
+  ) {
     return [
       _DayHeader(
         date: _selectedDate,
-        trailing: '${selectedSessions.length + selectedExams.length} 条学习',
+        trailing: '${selectedSessions.length + selectedExams.length} 条学习记录',
       ),
       const SizedBox(height: 10),
+      if (_studySyncWarning) ...[
+        const _InlineWarning(message: '练习历史暂未同步，请稍后重试'),
+        const SizedBox(height: 10),
+      ],
       if (selectedSessions.isEmpty && selectedExams.isEmpty)
         const _EmptyStateCard(
           icon: Icons.menu_book,
@@ -226,17 +296,53 @@ class _RadioLogPageState extends State<RadioLogPage> {
       ],
     ];
   }
+
+  List<Widget> _buildAllSection(
+    List<QsoLog> selectedLogs,
+    List<PracticeSession> selectedSessions,
+    List<ExamResult> selectedExams,
+  ) {
+    final entries = <({DateTime time, Widget child})>[
+      for (final log in selectedLogs)
+        (time: log.dateTime, child: _QsoLogCard(log: log)),
+      for (final session in selectedSessions)
+        (
+          time: session.lastAnsweredAt.toLocal(),
+          child: _StudyLogCard(session: session)
+        ),
+      for (final exam in selectedExams)
+        (time: exam.createdAt.toLocal(), child: _ExamLogCard(exam: exam)),
+    ]..sort((a, b) => b.time.compareTo(a.time));
+
+    return [
+      _DayHeader(
+        date: _selectedDate,
+        trailing: '${entries.length} 条记录',
+      ),
+      const SizedBox(height: 10),
+      if (_studySyncWarning) ...[
+        const _InlineWarning(message: '练习历史暂未同步，请稍后重试'),
+        const SizedBox(height: 10),
+      ],
+      if (entries.isEmpty)
+        const _EmptyStateCard(
+          icon: Icons.event_note,
+          title: '当天暂无记录',
+          subtitle: '当天的通联日志和学习记录会集中显示在这里。',
+        )
+      else
+        ...entries.map((entry) => entry.child),
+    ];
+  }
 }
 
 class _HeroHeader extends StatelessWidget {
   final int qsoCount;
   final int studyCount;
-  final VoidCallback onAddQso;
 
   const _HeroHeader({
     required this.qsoCount,
     required this.studyCount,
-    required this.onAddQso,
   });
 
   @override
@@ -244,9 +350,9 @@ class _HeroHeader extends StatelessWidget {
     final scheme = Theme.of(context).colorScheme;
 
     return Container(
-      padding: const EdgeInsets.all(18),
+      padding: const EdgeInsets.fromLTRB(16, 16, 16, 16),
       decoration: BoxDecoration(
-        borderRadius: BorderRadius.circular(24),
+        borderRadius: BorderRadius.circular(22),
         gradient: LinearGradient(
           begin: Alignment.topLeft,
           end: Alignment.bottomRight,
@@ -259,27 +365,16 @@ class _HeroHeader extends StatelessWidget {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Row(
-            children: [
-              Expanded(
-                child: Text(
-                  '日志',
-                  style: TextStyle(
-                    color: scheme.onPrimaryContainer,
-                    fontSize: 40,
-                    fontWeight: FontWeight.w900,
-                    height: 1,
-                  ),
-                ),
-              ),
-              FilledButton.icon(
-                onPressed: onAddQso,
-                icon: const Icon(Icons.add),
-                label: const Text('通联'),
-              ),
-            ],
+          Text(
+            '日志',
+            style: TextStyle(
+              color: scheme.onPrimaryContainer,
+              fontSize: 34,
+              fontWeight: FontWeight.w900,
+              height: 1,
+            ),
           ),
-          const SizedBox(height: 8),
+          const SizedBox(height: 6),
           Text(
             '日历、学习历史和通联日志集中管理',
             style: TextStyle(
@@ -287,7 +382,7 @@ class _HeroHeader extends StatelessWidget {
               fontWeight: FontWeight.w700,
             ),
           ),
-          const SizedBox(height: 18),
+          const SizedBox(height: 12),
           Row(
             children: [
               Expanded(
@@ -328,16 +423,16 @@ class _HeroStat extends StatelessWidget {
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
     return Container(
-      padding: const EdgeInsets.all(14),
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 11),
       decoration: BoxDecoration(
         color: scheme.surface.withValues(alpha: 0.72),
-        borderRadius: BorderRadius.circular(18),
+        borderRadius: BorderRadius.circular(16),
         border: Border.all(color: scheme.outlineVariant.withValues(alpha: 0.5)),
       ),
       child: Row(
         children: [
-          Icon(icon, color: scheme.primary),
-          const SizedBox(width: 10),
+          Icon(icon, color: scheme.primary, size: 22),
+          const SizedBox(width: 9),
           Expanded(
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
@@ -346,11 +441,18 @@ class _HeroStat extends StatelessWidget {
                   value,
                   style: TextStyle(
                     color: scheme.onSurface,
-                    fontSize: 24,
+                    fontSize: 22,
                     fontWeight: FontWeight.w900,
+                    height: 1.05,
                   ),
                 ),
-                Text(label, style: TextStyle(color: scheme.onSurfaceVariant)),
+                Text(
+                  label,
+                  style: TextStyle(
+                    color: scheme.onSurfaceVariant,
+                    fontSize: 13,
+                  ),
+                ),
               ],
             ),
           ),
@@ -365,6 +467,7 @@ class _CalendarPanel extends StatelessWidget {
   final DateTime selectedDate;
   final Map<String, dynamic> studyCalendar;
   final List<QsoLog> qsoLogs;
+  final bool hasSyncWarning;
   final ValueChanged<int> onMonthChanged;
   final ValueChanged<DateTime> onDateSelected;
 
@@ -373,6 +476,7 @@ class _CalendarPanel extends StatelessWidget {
     required this.selectedDate,
     required this.studyCalendar,
     required this.qsoLogs,
+    required this.hasSyncWarning,
     required this.onMonthChanged,
     required this.onDateSelected,
   });
@@ -381,12 +485,13 @@ class _CalendarPanel extends StatelessWidget {
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
     return _SurfaceCard(
-      padding: const EdgeInsets.fromLTRB(14, 16, 14, 16),
+      padding: const EdgeInsets.fromLTRB(10, 10, 10, 11),
       child: Column(
         children: [
           Row(
             children: [
               IconButton(
+                visualDensity: VisualDensity.compact,
                 onPressed: () => onMonthChanged(-1),
                 icon: const Icon(Icons.chevron_left),
               ),
@@ -396,18 +501,19 @@ class _CalendarPanel extends StatelessWidget {
                   textAlign: TextAlign.center,
                   style: TextStyle(
                     color: scheme.onSurface,
-                    fontSize: 22,
+                    fontSize: 20,
                     fontWeight: FontWeight.w900,
                   ),
                 ),
               ),
               IconButton(
+                visualDensity: VisualDensity.compact,
                 onPressed: () => onMonthChanged(1),
                 icon: const Icon(Icons.chevron_right),
               ),
             ],
           ),
-          const SizedBox(height: 10),
+          const SizedBox(height: 5),
           const Row(
             children: [
               _WeekdayCell('日'),
@@ -419,7 +525,7 @@ class _CalendarPanel extends StatelessWidget {
               _WeekdayCell('六'),
             ],
           ),
-          const SizedBox(height: 8),
+          const SizedBox(height: 6),
           _CalendarGrid(
             focusedMonth: focusedMonth,
             selectedDate: selectedDate,
@@ -427,15 +533,20 @@ class _CalendarPanel extends StatelessWidget {
             qsoLogs: qsoLogs,
             onDateSelected: onDateSelected,
           ),
-          const SizedBox(height: 14),
-          const Wrap(
+          const SizedBox(height: 10),
+          Wrap(
             alignment: WrapAlignment.center,
-            spacing: 18,
-            runSpacing: 8,
+            spacing: 13,
+            runSpacing: 6,
             children: [
-              _LegendDot(color: Color(0xff20d174), label: '通联'),
-              _LegendDot(color: Color(0xff3889ff), label: '学习'),
-              _LegendDot(color: Color(0xffffb547), label: '混合'),
+              const _LegendDot(color: Color(0xff20d174), label: '通联'),
+              const _LegendDot(color: Color(0xff3889ff), label: '学习'),
+              const _LegendDot(color: Color(0xffffb547), label: '混合'),
+              if (hasSyncWarning)
+                _LegendDot(
+                  color: scheme.onSurfaceVariant.withValues(alpha: 0.68),
+                  label: '未同步',
+                ),
             ],
           ),
         ],
@@ -461,73 +572,128 @@ class _CalendarGrid extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final scheme = Theme.of(context).colorScheme;
     final daysInMonth =
         DateUtils.getDaysInMonth(focusedMonth.year, focusedMonth.month);
     final firstDay = DateTime(focusedMonth.year, focusedMonth.month, 1);
     final offset = firstDay.weekday % 7;
     final totalCells = ((daysInMonth + offset + 6) ~/ 7) * 7;
+    final rows = totalCells ~/ 7;
 
-    return GridView.builder(
-      shrinkWrap: true,
-      physics: const NeverScrollableScrollPhysics(),
-      itemCount: totalCells,
-      gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
-        crossAxisCount: 7,
-        mainAxisSpacing: 6,
-        crossAxisSpacing: 6,
-      ),
-      itemBuilder: (context, index) {
-        if (index < offset || index >= daysInMonth + offset) {
-          return const SizedBox();
-        }
-
-        final day = index - offset + 1;
-        final date = DateTime(focusedMonth.year, focusedMonth.month, day);
-        final selected = DateUtils.isSameDay(date, selectedDate);
-        final key = _dateKey(date);
-        final hasStudy = studyCalendar.containsKey(key);
-        final hasQso =
-            qsoLogs.any((log) => DateUtils.isSameDay(log.date, date));
-        final markerColor = hasStudy && hasQso
-            ? const Color(0xffffb547)
-            : hasQso
-                ? const Color(0xff20d174)
-                : const Color(0xff3889ff);
-
-        return InkWell(
-          borderRadius: BorderRadius.circular(16),
-          onTap: () => onDateSelected(date),
-          child: AnimatedContainer(
-            duration: const Duration(milliseconds: 160),
-            decoration: BoxDecoration(
-              color: selected ? scheme.primary : Colors.transparent,
-              borderRadius: BorderRadius.circular(16),
-              border: Border.all(
-                color: selected ? scheme.primary : scheme.outlineVariant,
-                width: selected ? 0 : 0.7,
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final spacing = constraints.maxWidth < 360 ? 3.0 : 5.0;
+        return Column(
+          children: [
+            for (var row = 0; row < rows; row++) ...[
+              Row(
+                children: [
+                  for (var column = 0; column < 7; column++) ...[
+                    Expanded(
+                      child: _CalendarDayCell(
+                        index: row * 7 + column,
+                        offset: offset,
+                        daysInMonth: daysInMonth,
+                        focusedMonth: focusedMonth,
+                        selectedDate: selectedDate,
+                        studyCalendar: studyCalendar,
+                        qsoLogs: qsoLogs,
+                        onDateSelected: onDateSelected,
+                      ),
+                    ),
+                    if (column != 6) SizedBox(width: spacing),
+                  ],
+                ],
               ),
-            ),
-            child: Column(
-              mainAxisAlignment: MainAxisAlignment.center,
-              children: [
-                Text(
-                  '$day',
-                  style: TextStyle(
-                    color: selected ? scheme.onPrimary : scheme.onSurface,
-                    fontWeight: selected ? FontWeight.w900 : FontWeight.w700,
-                  ),
-                ),
-                const SizedBox(height: 4),
-                if (hasQso || hasStudy)
-                  _TinyDot(color: selected ? scheme.onPrimary : markerColor)
-                else
-                  const SizedBox(height: 6),
-              ],
-            ),
-          ),
+              if (row != rows - 1) SizedBox(height: spacing),
+            ],
+          ],
         );
       },
+    );
+  }
+}
+
+class _CalendarDayCell extends StatelessWidget {
+  final int index;
+  final int offset;
+  final int daysInMonth;
+  final DateTime focusedMonth;
+  final DateTime selectedDate;
+  final Map<String, dynamic> studyCalendar;
+  final List<QsoLog> qsoLogs;
+  final ValueChanged<DateTime> onDateSelected;
+
+  const _CalendarDayCell({
+    required this.index,
+    required this.offset,
+    required this.daysInMonth,
+    required this.focusedMonth,
+    required this.selectedDate,
+    required this.studyCalendar,
+    required this.qsoLogs,
+    required this.onDateSelected,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    if (index < offset || index >= daysInMonth + offset) {
+      return const AspectRatio(aspectRatio: 1, child: SizedBox());
+    }
+
+    final scheme = Theme.of(context).colorScheme;
+    final day = index - offset + 1;
+    final date = DateTime(focusedMonth.year, focusedMonth.month, day);
+    final selected = DateUtils.isSameDay(date, selectedDate);
+    final key = _dateKey(date);
+    final hasStudy = studyCalendar.containsKey(key);
+    final hasQso = qsoLogs.any((log) => DateUtils.isSameDay(log.date, date));
+    final markerColor = hasStudy && hasQso
+        ? const Color(0xffffb547)
+        : hasQso
+            ? const Color(0xff20d174)
+            : const Color(0xff3889ff);
+
+    return AspectRatio(
+      aspectRatio: 1,
+      child: InkWell(
+        borderRadius: BorderRadius.circular(13),
+        onTap: () => onDateSelected(date),
+        child: AnimatedContainer(
+          duration: const Duration(milliseconds: 160),
+          decoration: BoxDecoration(
+            color: selected ? scheme.primary : Colors.transparent,
+            borderRadius: BorderRadius.circular(13),
+            border: Border.all(
+              color: selected ? scheme.primary : scheme.outlineVariant,
+              width: selected ? 0 : 0.7,
+            ),
+          ),
+          child: FittedBox(
+            fit: BoxFit.scaleDown,
+            child: Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 3, vertical: 2),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Text(
+                    '$day',
+                    style: TextStyle(
+                      color: selected ? scheme.onPrimary : scheme.onSurface,
+                      fontSize: 14,
+                      fontWeight: selected ? FontWeight.w900 : FontWeight.w800,
+                    ),
+                  ),
+                  const SizedBox(height: 2),
+                  if (hasQso || hasStudy)
+                    _TinyDot(color: selected ? scheme.onPrimary : markerColor)
+                  else
+                    const SizedBox(height: 6),
+                ],
+              ),
+            ),
+          ),
+        ),
+      ),
     );
   }
 }
@@ -547,10 +713,10 @@ class _SegmentedTabs extends StatelessWidget {
     final scheme = Theme.of(context).colorScheme;
 
     return Container(
-      padding: const EdgeInsets.all(5),
+      padding: const EdgeInsets.all(4),
       decoration: BoxDecoration(
         color: scheme.surfaceContainerHighest,
-        borderRadius: BorderRadius.circular(18),
+        borderRadius: BorderRadius.circular(16),
       ),
       child: Row(
         children: [
@@ -561,10 +727,10 @@ class _SegmentedTabs extends StatelessWidget {
                 onTap: () => onChanged(i),
                 child: AnimatedContainer(
                   duration: const Duration(milliseconds: 160),
-                  padding: const EdgeInsets.symmetric(vertical: 12),
+                  padding: const EdgeInsets.symmetric(vertical: 9),
                   decoration: BoxDecoration(
                     color: i == selectedIndex ? scheme.primary : null,
-                    borderRadius: BorderRadius.circular(14),
+                    borderRadius: BorderRadius.circular(12),
                   ),
                   child: Text(
                     tabs[i],
@@ -579,6 +745,42 @@ class _SegmentedTabs extends StatelessWidget {
                 ),
               ),
             ),
+        ],
+      ),
+    );
+  }
+}
+
+class _InlineWarning extends StatelessWidget {
+  final String message;
+
+  const _InlineWarning({required this.message});
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    return Container(
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: scheme.surfaceContainerHighest.withValues(alpha: 0.72),
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(color: scheme.outlineVariant),
+      ),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Icon(
+            Icons.info_outline,
+            color: scheme.onSurfaceVariant.withValues(alpha: 0.72),
+            size: 20,
+          ),
+          const SizedBox(width: 8),
+          Expanded(
+            child: Text(
+              message,
+              style: TextStyle(color: scheme.onSurfaceVariant, height: 1.4),
+            ),
+          ),
         ],
       ),
     );
@@ -836,15 +1038,11 @@ class _EmptyStateCard extends StatelessWidget {
   final IconData icon;
   final String title;
   final String subtitle;
-  final String? actionLabel;
-  final VoidCallback? onAction;
 
   const _EmptyStateCard({
     required this.icon,
     required this.title,
     required this.subtitle,
-    this.actionLabel,
-    this.onAction,
   });
 
   @override
@@ -869,14 +1067,6 @@ class _EmptyStateCard extends StatelessWidget {
             textAlign: TextAlign.center,
             style: TextStyle(color: scheme.onSurfaceVariant),
           ),
-          if (actionLabel != null && onAction != null) ...[
-            const SizedBox(height: 14),
-            FilledButton.icon(
-              onPressed: onAction,
-              icon: const Icon(Icons.add),
-              label: Text(actionLabel!),
-            ),
-          ],
         ],
       ),
     );
@@ -926,6 +1116,7 @@ class _WeekdayCell extends StatelessWidget {
           text,
           style: TextStyle(
             color: Theme.of(context).colorScheme.onSurfaceVariant,
+            fontSize: 13,
             fontWeight: FontWeight.w800,
           ),
         ),
@@ -952,7 +1143,10 @@ class _LegendDot extends StatelessWidget {
         const SizedBox(width: 7),
         Text(
           label,
-          style: TextStyle(color: Theme.of(context).colorScheme.onSurface),
+          style: TextStyle(
+            color: Theme.of(context).colorScheme.onSurface,
+            fontSize: 13,
+          ),
         ),
       ],
     );
@@ -1267,7 +1461,7 @@ class _QsoDropdown extends StatelessWidget {
     return Padding(
       padding: const EdgeInsets.only(bottom: 12),
       child: DropdownButtonFormField<String>(
-        value: value,
+        initialValue: value,
         items: values
             .map((item) => DropdownMenuItem(value: item, child: Text(item)))
             .toList(),

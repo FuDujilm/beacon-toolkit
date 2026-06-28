@@ -171,6 +171,12 @@ class DiscoveryFeedItem {
   final DateTime? publishedAt;
   final DateTime? fetchedAt;
   final String? apiBaseUrl;
+  final String status;
+  final DateTime? registrationStart;
+  final DateTime? registrationEnd;
+  final DateTime? examTime;
+  final String? venue;
+  final String? signupUrl;
 
   const DiscoveryFeedItem({
     required this.id,
@@ -188,6 +194,12 @@ class DiscoveryFeedItem {
     this.publishedAt,
     this.fetchedAt,
     this.apiBaseUrl,
+    this.status = 'unknown',
+    this.registrationStart,
+    this.registrationEnd,
+    this.examTime,
+    this.venue,
+    this.signupUrl,
   });
 
   factory DiscoveryFeedItem.fromJson(
@@ -222,17 +234,23 @@ class DiscoveryFeedItem {
       fetchedAt: DateTime.tryParse(
           json['fetched_at'] as String? ?? json['fetchedAt'] as String? ?? ''),
       apiBaseUrl: apiBaseUrl,
+      status: json['status'] as String? ?? 'unknown',
+      registrationStart: DateTime.tryParse(
+          json['registration_start'] as String? ??
+              json['registrationStart'] as String? ??
+              ''),
+      registrationEnd: DateTime.tryParse(json['registration_end'] as String? ??
+          json['registrationEnd'] as String? ??
+          ''),
+      examTime: DateTime.tryParse(
+          json['exam_time'] as String? ?? json['examTime'] as String? ?? ''),
+      venue: json['venue'] as String?,
+      signupUrl: json['signup_url'] as String? ?? json['signupUrl'] as String?,
     );
   }
 }
 
 class DiscoveryDetail extends DiscoveryFeedItem {
-  final String status;
-  final DateTime? registrationStart;
-  final DateTime? registrationEnd;
-  final DateTime? examTime;
-  final String? venue;
-  final String? signupUrl;
   final double confidence;
   final String disclaimer;
 
@@ -252,12 +270,12 @@ class DiscoveryDetail extends DiscoveryFeedItem {
     super.publishedAt,
     super.fetchedAt,
     super.apiBaseUrl,
-    this.status = 'unknown',
-    this.registrationStart,
-    this.registrationEnd,
-    this.examTime,
-    this.venue,
-    this.signupUrl,
+    super.status,
+    super.registrationStart,
+    super.registrationEnd,
+    super.examTime,
+    super.venue,
+    super.signupUrl,
     this.confidence = 0,
     this.disclaimer = '资讯由系统聚合整理，具体安排以官方原文为准。',
   });
@@ -285,13 +303,17 @@ class DiscoveryDetail extends DiscoveryFeedItem {
       fetchedAt: DateTime.tryParse(json['fetched_at'] as String? ?? ''),
       apiBaseUrl: apiBaseUrl,
       status: json['status'] as String? ?? 'unknown',
-      registrationStart:
-          DateTime.tryParse(json['registration_start'] as String? ?? ''),
-      registrationEnd:
-          DateTime.tryParse(json['registration_end'] as String? ?? ''),
-      examTime: DateTime.tryParse(json['exam_time'] as String? ?? ''),
+      registrationStart: DateTime.tryParse(
+          json['registration_start'] as String? ??
+              json['registrationStart'] as String? ??
+              ''),
+      registrationEnd: DateTime.tryParse(json['registration_end'] as String? ??
+          json['registrationEnd'] as String? ??
+          ''),
+      examTime: DateTime.tryParse(
+          json['exam_time'] as String? ?? json['examTime'] as String? ?? ''),
       venue: json['venue'] as String?,
-      signupUrl: json['signup_url'] as String?,
+      signupUrl: json['signup_url'] as String? ?? json['signupUrl'] as String?,
       confidence: (json['confidence'] as num?)?.toDouble() ?? 0,
       disclaimer: json['disclaimer'] as String? ?? '资讯由系统聚合整理，具体安排以官方原文为准。',
     );
@@ -580,6 +602,7 @@ class SatelliteLookSample {
   final double elevation;
   final double azimuth;
   final double rangeKm;
+  final double? dopplerFactor;
   final GroundTrackPoint groundPoint;
 
   const SatelliteLookSample({
@@ -587,6 +610,7 @@ class SatelliteLookSample {
     required this.elevation,
     required this.azimuth,
     required this.rangeKm,
+    this.dopplerFactor,
     required this.groundPoint,
   });
 }

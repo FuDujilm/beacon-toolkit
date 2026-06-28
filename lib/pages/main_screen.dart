@@ -16,7 +16,7 @@ class _MainScreenState extends State<MainScreen> {
   int _selectedIndex = 0;
 
   List<Widget> get _pages => <Widget>[
-        const RadioHomePage(),
+        RadioHomePage(onOpenTools: () => _onItemTapped(1)),
         const RadioToolsPage(),
         const RadioLogPage(),
         const DiscoveryPage(),

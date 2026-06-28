@@ -3,9 +3,10 @@ import 'package:flutter/material.dart';
 import '../home/calendar_page.dart';
 import '../practice/practice_page.dart';
 import 'frequency_table_page.dart';
+import 'callsign_lookup_page.dart';
 import 'grid_map_page.dart';
+import 'propagation_forecast_page.dart';
 import 'radio_placeholder_page.dart';
-import 'radio_theme.dart';
 import 'satellite_tracker_page.dart';
 
 class RadioToolsPage extends StatefulWidget {
@@ -18,76 +19,54 @@ class RadioToolsPage extends StatefulWidget {
 class _RadioToolsPageState extends State<RadioToolsPage> {
   int _categoryIndex = 0;
 
-  final _categories = const ['常用', '计算', '频率', '传播', '日志', '考试', '其他'];
+  final _categories = const ['全部', '计算', '频率', '传播', '日志', '考试', '其他'];
 
   @override
   Widget build(BuildContext context) {
-    final tools = _tools(context);
-    final colors = radioThemeColors(context);
+    final scheme = Theme.of(context).colorScheme;
+    final tools = _visibleTools(context);
 
     return Scaffold(
-      backgroundColor: colors.page,
+      backgroundColor: scheme.surface,
       appBar: AppBar(
-        backgroundColor: colors.appBar,
-        foregroundColor: colors.text,
+        backgroundColor: scheme.surface,
+        foregroundColor: scheme.onSurface,
+        surfaceTintColor: Colors.transparent,
         title: const Text('工具'),
-        actions: [
-          IconButton(
-            tooltip: '统计',
-            onPressed: () {},
-            icon: const Icon(Icons.query_stats),
-          ),
-        ],
       ),
-      body: Row(
-        children: [
-          Container(
-            width: 96,
-            color: colors.panel,
-            child: ListView.builder(
-              padding: const EdgeInsets.symmetric(vertical: 16),
-              itemCount: _categories.length,
-              itemBuilder: (context, index) {
-                final selected = index == _categoryIndex;
-                return InkWell(
-                  onTap: () => setState(() => _categoryIndex = index),
-                  child: Container(
-                    height: 62,
-                    alignment: Alignment.center,
-                    decoration: BoxDecoration(
-                      border: Border(
-                        left: BorderSide(
-                          color: selected
-                              ? const Color(0xff3f8cff)
-                              : Colors.transparent,
-                          width: 3,
-                        ),
-                      ),
-                    ),
-                    child: Text(
-                      _categories[index],
-                      style: TextStyle(
-                        color: selected ? colors.text : colors.muted,
-                        fontWeight:
-                            selected ? FontWeight.w900 : FontWeight.w700,
-                      ),
-                    ),
-                  ),
-                );
-              },
-            ),
-          ),
-          Expanded(
-            child: ListView.separated(
-              padding: const EdgeInsets.fromLTRB(16, 16, 16, 110),
-              itemCount: tools.length,
-              separatorBuilder: (_, __) => const SizedBox(height: 10),
-              itemBuilder: (context, index) => _ToolRow(tool: tools[index]),
-            ),
-          ),
-        ],
+      body: LayoutBuilder(
+        builder: (context, constraints) {
+          final compact = constraints.maxWidth < 520;
+          final sidebarWidth = constraints.maxWidth < 380 ? 72.0 : 88.0;
+          return Row(
+            children: [
+              _CategorySidebar(
+                categories: _categories,
+                selectedIndex: _categoryIndex,
+                width: compact ? sidebarWidth : 104,
+                compact: compact,
+                onChanged: (index) => setState(() => _categoryIndex = index),
+              ),
+              Expanded(
+                child: _ToolsList(
+                  categories: _categories,
+                  selectedCategoryIndex: _categoryIndex,
+                  tools: tools,
+                  compact: compact,
+                ),
+              ),
+            ],
+          );
+        },
       ),
     );
+  }
+
+  List<_RadioTool> _visibleTools(BuildContext context) {
+    final selected = _categories[_categoryIndex];
+    final tools = _tools(context);
+    if (selected == '全部') return tools;
+    return tools.where((tool) => tool.category == selected).toList();
   }
 
   List<_RadioTool> _tools(BuildContext context) {
@@ -97,7 +76,11 @@ class _RadioToolsPageState extends State<RadioToolsPage> {
         '查询电台信息、B站/QRZ 数据',
         Icons.search,
         const Color(0xff347cff),
-        () => _openPlaceholder(context, '呼号查询', Icons.search),
+        () => Navigator.of(context).push(
+          MaterialPageRoute(builder: (_) => const CallsignLookupPage()),
+        ),
+        category: '其他',
+        isCommon: true,
       ),
       _RadioTool(
         'QTH 定位',
@@ -107,6 +90,8 @@ class _RadioToolsPageState extends State<RadioToolsPage> {
         () => Navigator.of(context).push(
           MaterialPageRoute(builder: (_) => const GridMapPage()),
         ),
+        category: '计算',
+        isCommon: true,
       ),
       _RadioTool(
         '频率表',
@@ -116,6 +101,8 @@ class _RadioToolsPageState extends State<RadioToolsPage> {
         () => Navigator.of(context).push(
           MaterialPageRoute(builder: (_) => const FrequencyTablePage()),
         ),
+        category: '频率',
+        isCommon: true,
       ),
       _RadioTool(
         '卫星追踪',
@@ -125,6 +112,8 @@ class _RadioToolsPageState extends State<RadioToolsPage> {
         () => Navigator.of(context).push(
           MaterialPageRoute(builder: (_) => const SatelliteTrackerPage()),
         ),
+        category: '传播',
+        isCommon: true,
       ),
       _RadioTool(
         '天线计算器',
@@ -132,6 +121,8 @@ class _RadioToolsPageState extends State<RadioToolsPage> {
         Icons.settings_input_antenna,
         const Color(0xffef9743),
         () => _openPlaceholder(context, '天线计算器', Icons.settings_input_antenna),
+        category: '计算',
+        isCommon: true,
       ),
       _RadioTool(
         '声码器',
@@ -139,13 +130,19 @@ class _RadioToolsPageState extends State<RadioToolsPage> {
         Icons.graphic_eq,
         const Color(0xff7357d9),
         () => _openPlaceholder(context, '声码器', Icons.graphic_eq),
+        category: '频率',
+        isCommon: true,
       ),
       _RadioTool(
         '传播预测',
         'HF 传播预测与电离层数据',
         Icons.cloud_queue,
         const Color(0xff4bc987),
-        () => _openPlaceholder(context, '传播预测', Icons.cloud_queue),
+        () => Navigator.of(context).push(
+          MaterialPageRoute(builder: (_) => const PropagationForecastPage()),
+        ),
+        category: '传播',
+        isCommon: true,
       ),
       _RadioTool(
         '考试题库',
@@ -155,6 +152,8 @@ class _RadioToolsPageState extends State<RadioToolsPage> {
         () => Navigator.of(context).push(
           MaterialPageRoute(builder: (_) => const PracticePage()),
         ),
+        category: '考试',
+        isCommon: false,
       ),
       _RadioTool(
         '学习日历',
@@ -164,6 +163,8 @@ class _RadioToolsPageState extends State<RadioToolsPage> {
         () => Navigator.of(context).push(
           MaterialPageRoute(builder: (_) => const CalendarPage()),
         ),
+        category: '日志',
+        isCommon: false,
       ),
     ];
   }
@@ -181,38 +182,255 @@ class _RadioToolsPageState extends State<RadioToolsPage> {
   }
 }
 
-class _ToolRow extends StatelessWidget {
-  final _RadioTool tool;
+class _ToolsList extends StatelessWidget {
+  final List<String> categories;
+  final int selectedCategoryIndex;
+  final List<_RadioTool> tools;
+  final bool compact;
 
-  const _ToolRow({required this.tool});
+  const _ToolsList({
+    required this.categories,
+    required this.selectedCategoryIndex,
+    required this.tools,
+    required this.compact,
+  });
 
   @override
   Widget build(BuildContext context) {
-    final colors = radioThemeColors(context);
+    return ListView(
+      padding: EdgeInsets.fromLTRB(
+        compact ? 10 : 18,
+        compact ? 8 : 10,
+        compact ? 10 : 18,
+        110,
+      ),
+      children: [
+        _ToolsOverview(
+          selectedCategory: categories[selectedCategoryIndex],
+          toolCount: tools.length,
+          compact: compact,
+        ),
+        SizedBox(height: compact ? 10 : 14),
+        for (var index = 0; index < tools.length; index++) ...[
+          _ToolRow(tool: tools[index], compact: compact),
+          if (index != tools.length - 1) const SizedBox(height: 10),
+        ],
+      ],
+    );
+  }
+}
+
+class _CategorySidebar extends StatelessWidget {
+  final List<String> categories;
+  final int selectedIndex;
+  final double width;
+  final bool compact;
+  final ValueChanged<int> onChanged;
+
+  const _CategorySidebar({
+    required this.categories,
+    required this.selectedIndex,
+    required this.width,
+    required this.compact,
+    required this.onChanged,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    return Container(
+      width: width,
+      decoration: BoxDecoration(
+        color: scheme.surfaceContainer,
+        border: Border(right: BorderSide(color: scheme.outlineVariant)),
+      ),
+      child: ListView.separated(
+        padding: EdgeInsets.fromLTRB(compact ? 6 : 8, 12, compact ? 6 : 8, 110),
+        itemCount: categories.length,
+        separatorBuilder: (_, __) => SizedBox(height: compact ? 4 : 6),
+        itemBuilder: (context, index) {
+          final selected = index == selectedIndex;
+          return Material(
+            color: selected ? scheme.secondaryContainer : Colors.transparent,
+            borderRadius: BorderRadius.circular(compact ? 12 : 14),
+            clipBehavior: Clip.antiAlias,
+            child: InkWell(
+              onTap: () => onChanged(index),
+              child: Container(
+                height: compact ? 50 : 54,
+                padding: EdgeInsets.symmetric(horizontal: compact ? 6 : 8),
+                alignment: compact ? Alignment.center : Alignment.centerLeft,
+                child: compact
+                    ? Column(
+                        mainAxisAlignment: MainAxisAlignment.center,
+                        children: [
+                          AnimatedContainer(
+                            duration: const Duration(milliseconds: 160),
+                            width: selected ? 22 : 0,
+                            height: 3,
+                            decoration: BoxDecoration(
+                              color: scheme.secondary,
+                              borderRadius: BorderRadius.circular(999),
+                            ),
+                          ),
+                          const SizedBox(height: 5),
+                          Text(
+                            categories[index],
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            textAlign: TextAlign.center,
+                            style: TextStyle(
+                              color: selected
+                                  ? scheme.onSecondaryContainer
+                                  : scheme.onSurfaceVariant,
+                              fontSize: 13,
+                              fontWeight:
+                                  selected ? FontWeight.w900 : FontWeight.w700,
+                            ),
+                          ),
+                        ],
+                      )
+                    : Row(
+                        children: [
+                          AnimatedContainer(
+                            duration: const Duration(milliseconds: 160),
+                            width: 3,
+                            height: selected ? 24 : 0,
+                            decoration: BoxDecoration(
+                              color: scheme.secondary,
+                              borderRadius: BorderRadius.circular(999),
+                            ),
+                          ),
+                          const SizedBox(width: 9),
+                          Expanded(
+                            child: Text(
+                              categories[index],
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                              style: TextStyle(
+                                color: selected
+                                    ? scheme.onSecondaryContainer
+                                    : scheme.onSurfaceVariant,
+                                fontWeight: selected
+                                    ? FontWeight.w900
+                                    : FontWeight.w700,
+                              ),
+                            ),
+                          ),
+                        ],
+                      ),
+              ),
+            ),
+          );
+        },
+      ),
+    );
+  }
+}
+
+class _ToolsOverview extends StatelessWidget {
+  final String selectedCategory;
+  final int toolCount;
+  final bool compact;
+
+  const _ToolsOverview({
+    required this.selectedCategory,
+    required this.toolCount,
+    required this.compact,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    return Container(
+      padding:
+          EdgeInsets.fromLTRB(14, compact ? 12 : 14, 14, compact ? 12 : 14),
+      decoration: BoxDecoration(
+        color: scheme.surfaceContainer,
+        borderRadius: BorderRadius.circular(18),
+        border: Border.all(color: scheme.outlineVariant),
+      ),
+      child: Row(
+        children: [
+          if (!compact) ...[
+            Container(
+              width: 44,
+              height: 44,
+              decoration: BoxDecoration(
+                color: scheme.primaryContainer,
+                borderRadius: BorderRadius.circular(14),
+              ),
+              child: Icon(Icons.apps, color: scheme.onPrimaryContainer),
+            ),
+            const SizedBox(width: 12),
+          ],
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  selectedCategory == '全部' ? '全部工具' : '$selectedCategory工具',
+                  style: TextStyle(
+                    color: scheme.onSurface,
+                    fontSize: compact ? 17 : 19,
+                    fontWeight: FontWeight.w900,
+                  ),
+                ),
+                const SizedBox(height: 3),
+                Text(
+                  '$toolCount 个入口，点击卡片进入对应工具',
+                  style: TextStyle(
+                    color: scheme.onSurfaceVariant,
+                    fontSize: compact ? 12 : null,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _ToolRow extends StatelessWidget {
+  final _RadioTool tool;
+  final bool compact;
+
+  const _ToolRow({
+    required this.tool,
+    required this.compact,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
     return Material(
-      color: colors.panelAlt,
+      color: scheme.surfaceContainer,
       borderRadius: BorderRadius.circular(16),
       clipBehavior: Clip.antiAlias,
       child: InkWell(
         onTap: tool.onTap,
         child: Container(
-          padding: const EdgeInsets.all(16),
+          padding: EdgeInsets.all(compact ? 12 : 16),
           decoration: BoxDecoration(
             borderRadius: BorderRadius.circular(16),
-            border: Border.all(color: colors.border),
+            border: Border.all(color: scheme.outlineVariant),
           ),
           child: Row(
             children: [
               Container(
-                width: 54,
-                height: 54,
+                width: compact ? 48 : 54,
+                height: compact ? 48 : 54,
                 decoration: BoxDecoration(
                   color: tool.color,
                   borderRadius: BorderRadius.circular(14),
                 ),
-                child: Icon(tool.icon, color: Colors.white, size: 30),
+                child: Icon(tool.icon,
+                    color: Colors.white, size: compact ? 26 : 30),
               ),
-              const SizedBox(width: 16),
+              SizedBox(width: compact ? 12 : 16),
               Expanded(
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
@@ -220,20 +438,25 @@ class _ToolRow extends StatelessWidget {
                     Text(
                       tool.title,
                       style: TextStyle(
-                        color: colors.text,
-                        fontSize: 17,
+                        color: scheme.onSurface,
+                        fontSize: compact ? 16 : 17,
                         fontWeight: FontWeight.w900,
                       ),
                     ),
                     const SizedBox(height: 4),
                     Text(
                       tool.subtitle,
-                      style: TextStyle(color: colors.muted),
+                      maxLines: compact ? 2 : null,
+                      overflow: compact ? TextOverflow.ellipsis : null,
+                      style: TextStyle(
+                        color: scheme.onSurfaceVariant,
+                        fontSize: compact ? 13 : null,
+                      ),
                     ),
                   ],
                 ),
               ),
-              Icon(Icons.chevron_right, color: colors.muted),
+              Icon(Icons.chevron_right, color: scheme.onSurfaceVariant),
             ],
           ),
         ),
@@ -247,6 +470,8 @@ class _RadioTool {
   final String subtitle;
   final IconData icon;
   final Color color;
+  final String category;
+  final bool isCommon;
   final VoidCallback onTap;
 
   const _RadioTool(
@@ -254,6 +479,8 @@ class _RadioTool {
     this.subtitle,
     this.icon,
     this.color,
-    this.onTap,
-  );
+    this.onTap, {
+    required this.category,
+    required this.isCommon,
+  });
 }

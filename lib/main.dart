@@ -41,6 +41,7 @@ class MyApp extends StatelessWidget {
 
     return MaterialApp(
       title: 'Beacon',
+      debugShowCheckedModeBanner: false,
       themeMode: themeController.themeMode,
       theme: ThemeData(
         colorScheme: lightColorScheme,

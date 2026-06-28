@@ -104,6 +104,13 @@ class _SatelliteDetailPageState extends State<SatelliteDetailPage> {
                   const SizedBox(height: 16),
                 ],
                 _TransponderPanel(transponders: detail.transponders),
+                if (nextPass != null && detail.transponders.isNotEmpty) ...[
+                  const SizedBox(height: 16),
+                  _DopplerPredictionPanel(
+                    pass: nextPass,
+                    transponders: detail.transponders,
+                  ),
+                ],
                 const SizedBox(height: 16),
                 _AmsatStatusPanel(
                   summaries: detail.statusSummaries,
@@ -1176,6 +1183,170 @@ class _TransponderMetric extends StatelessWidget {
   }
 }
 
+class _DopplerPredictionPanel extends StatelessWidget {
+  final SatellitePass pass;
+  final List<SatelliteTransponder> transponders;
+
+  const _DopplerPredictionPanel({
+    required this.pass,
+    required this.transponders,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final usable = transponders
+        .where((item) => item.uplinkLow != null || item.downlinkLow != null)
+        .toList();
+    if (usable.isEmpty) {
+      return const _DetailPanel(
+        title: '多普勒频移预测',
+        icon: Icons.graphic_eq,
+        child: Text('暂无可用于计算的转发器频率'),
+      );
+    }
+    return _DetailPanel(
+      title: '多普勒频移',
+      icon: Icons.graphic_eq,
+      child: StreamBuilder<DateTime>(
+        stream: Stream<DateTime>.periodic(
+          const Duration(seconds: 1),
+          (_) => DateTime.now(),
+        ),
+        builder: (context, snapshot) {
+          final now = snapshot.data ?? DateTime.now();
+          final currentPoint = _currentDopplerPoint(pass, now);
+          final points = [
+            if (currentPoint != null) currentPoint,
+            ..._dopplerPoints(pass),
+          ];
+          if (points.isEmpty) {
+            return Text(
+              '当前过境数据缺少有效多普勒采样。',
+              style: TextStyle(
+                color: Theme.of(context).colorScheme.onSurfaceVariant,
+              ),
+            );
+          }
+          return Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                pass.isActive
+                    ? '正在按当前时间实时估算多普勒修正。下行显示建议接收频率；上行显示建议发射修正参考。'
+                    : '当前未过境，先显示下一次过境的 AOS / TCA / LOS 预测值。',
+                style: TextStyle(
+                  color: Theme.of(context).colorScheme.onSurfaceVariant,
+                  height: 1.45,
+                ),
+              ),
+              const SizedBox(height: 12),
+              for (var index = 0; index < usable.length; index++) ...[
+                _DopplerTransponderCard(
+                  index: index + 1,
+                  transponder: usable[index],
+                  points: points,
+                ),
+                if (index != usable.length - 1) const SizedBox(height: 10),
+              ],
+            ],
+          );
+        },
+      ),
+    );
+  }
+}
+
+class _DopplerTransponderCard extends StatelessWidget {
+  final int index;
+  final SatelliteTransponder transponder;
+  final List<_DopplerPassPoint> points;
+
+  const _DopplerTransponderCard({
+    required this.index,
+    required this.transponder,
+    required this.points,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    return Container(
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: scheme.surfaceContainerLowest,
+        borderRadius: BorderRadius.circular(8),
+        border: Border.all(color: scheme.outlineVariant),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            '转发器 $index · ${transponder.mode.isEmpty ? transponder.description : transponder.mode}',
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            style: const TextStyle(fontWeight: FontWeight.w900),
+          ),
+          const SizedBox(height: 10),
+          SingleChildScrollView(
+            scrollDirection: Axis.horizontal,
+            child: DataTable(
+              headingRowHeight: 32,
+              dataRowMinHeight: 42,
+              dataRowMaxHeight: 50,
+              columnSpacing: 14,
+              horizontalMargin: 8,
+              columns: const [
+                DataColumn(label: Text('时刻')),
+                DataColumn(label: Text('下行接收')),
+                DataColumn(label: Text('下行偏移')),
+                DataColumn(label: Text('上行发射')),
+                DataColumn(label: Text('上行偏移')),
+              ],
+              rows: [
+                for (final point in points)
+                  DataRow(
+                    selected: point.isCurrent,
+                    cells: [
+                      DataCell(Text(point.label)),
+                      DataCell(Text(_shiftedFrequency(
+                        transponder.downlinkLow,
+                        point.factor,
+                      ))),
+                      DataCell(Text(_frequencyOffset(
+                        transponder.downlinkLow,
+                        point.factor,
+                      ))),
+                      DataCell(Text(_shiftedFrequency(
+                        transponder.uplinkLow,
+                        point.factor,
+                      ))),
+                      DataCell(Text(_frequencyOffset(
+                        transponder.uplinkLow,
+                        point.factor,
+                      ))),
+                    ],
+                  ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _DopplerPassPoint {
+  final String label;
+  final double factor;
+  final bool isCurrent;
+
+  const _DopplerPassPoint({
+    required this.label,
+    required this.factor,
+    this.isCurrent = false,
+  });
+}
+
 class _AmsatStatusPanel extends StatelessWidget {
   final List<SatelliteStatusSummary> summaries;
   final String satelliteName;
@@ -1717,6 +1888,86 @@ class _PassRadarPainter extends CustomPainter {
 String _formatFrequency(int? hz) {
   if (hz == null || hz <= 0) return '--';
   return '${(hz / 1000000).toStringAsFixed(3)} MHz';
+}
+
+List<_DopplerPassPoint> _dopplerPoints(SatellitePass pass) {
+  final fallback = pass.dopplerFactor ?? 1.0;
+  final samples = pass.lookSamples
+      .where((sample) => _isFiniteFactor(sample.dopplerFactor))
+      .toList(growable: false);
+  if (samples.isEmpty) {
+    if (!_isFiniteFactor(fallback)) return const [];
+    return [
+      _DopplerPassPoint(label: 'AOS', factor: fallback),
+      _DopplerPassPoint(label: 'TCA', factor: fallback),
+      _DopplerPassPoint(label: 'LOS', factor: fallback),
+    ];
+  }
+
+  final tca = samples.reduce((a, b) {
+    final aDelta = a.time.difference(pass.maxElevationAt).inSeconds.abs();
+    final bDelta = b.time.difference(pass.maxElevationAt).inSeconds.abs();
+    return aDelta <= bDelta ? a : b;
+  });
+
+  return [
+    _DopplerPassPoint(label: 'AOS', factor: samples.first.dopplerFactor!),
+    _DopplerPassPoint(label: 'TCA', factor: tca.dopplerFactor!),
+    _DopplerPassPoint(label: 'LOS', factor: samples.last.dopplerFactor!),
+  ];
+}
+
+_DopplerPassPoint? _currentDopplerPoint(SatellitePass pass, DateTime now) {
+  if (now.isBefore(pass.aos) || now.isAfter(pass.los)) return null;
+  final factor = _interpolatedDopplerFactor(pass, now);
+  if (factor == null) return null;
+  return _DopplerPassPoint(
+    label: '实时',
+    factor: factor,
+    isCurrent: true,
+  );
+}
+
+double? _interpolatedDopplerFactor(SatellitePass pass, DateTime target) {
+  final samples = pass.lookSamples
+      .where((sample) => _isFiniteFactor(sample.dopplerFactor))
+      .toList(growable: false);
+  if (samples.isEmpty) {
+    return _isFiniteFactor(pass.dopplerFactor) ? pass.dopplerFactor : null;
+  }
+  if (!target.isAfter(samples.first.time)) return samples.first.dopplerFactor;
+  if (!target.isBefore(samples.last.time)) return samples.last.dopplerFactor;
+
+  for (var index = 1; index < samples.length; index++) {
+    final previous = samples[index - 1];
+    final next = samples[index];
+    if (target.isBefore(previous.time) || target.isAfter(next.time)) {
+      continue;
+    }
+    final span = next.time.difference(previous.time).inMilliseconds;
+    if (span <= 0) return next.dopplerFactor;
+    final elapsed = target.difference(previous.time).inMilliseconds;
+    final ratio = (elapsed / span).clamp(0.0, 1.0);
+    return previous.dopplerFactor! +
+        (next.dopplerFactor! - previous.dopplerFactor!) * ratio;
+  }
+  return pass.dopplerFactor;
+}
+
+String _shiftedFrequency(int? hz, double factor) {
+  if (hz == null || hz <= 0 || !factor.isFinite) return '--';
+  return '${(hz * factor / 1000000).toStringAsFixed(3)} MHz';
+}
+
+String _frequencyOffset(int? hz, double factor) {
+  if (hz == null || hz <= 0 || !factor.isFinite) return '--';
+  final khz = hz * (factor - 1) / 1000;
+  final sign = khz >= 0 ? '+' : '';
+  return '$sign${khz.toStringAsFixed(1)} kHz';
+}
+
+bool _isFiniteFactor(double? value) {
+  return value != null && value.isFinite;
 }
 
 String _formatDuration(Duration duration) {

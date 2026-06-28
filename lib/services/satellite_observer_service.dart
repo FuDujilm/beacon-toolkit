@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:math';
 
+import 'package:flutter/services.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:sensors_plus/sensors_plus.dart';
 
@@ -36,10 +37,35 @@ class SatelliteObserverService {
       : _satelliteService = satelliteService ?? SatelliteService();
 
   Stream<double> get headingStream {
-    return magnetometerEventStream().map((event) {
-      final heading = atan2(event.y, event.x) * 180 / pi;
-      return (heading + 360) % 360;
-    });
+    late StreamController<double> controller;
+    StreamSubscription<MagnetometerEvent>? subscription;
+
+    controller = StreamController<double>(
+      onListen: () {
+        subscription = magnetometerEventStream().listen(
+          (event) {
+            final heading = atan2(event.y, event.x) * 180 / pi;
+            controller.add((heading + 360) % 360);
+          },
+          onError: (Object error, StackTrace stackTrace) {
+            if (_isMissingSensorPlugin(error)) {
+              controller.close();
+              return;
+            }
+            controller.addError(error, stackTrace);
+          },
+          cancelOnError: false,
+        );
+      },
+      onCancel: () async {
+        try {
+          await subscription?.cancel();
+        } on MissingPluginException {
+          // Desktop/web builds may not provide sensors_plus platform channels.
+        }
+      },
+    );
+    return controller.stream;
   }
 
   Stream<DeviceAimState> get deviceAimStream {
@@ -56,20 +82,44 @@ class SatelliteObserverService {
 
     controller = StreamController<DeviceAimState>(
       onListen: () {
-        headingSubscription = headingStream.listen((value) {
-          heading = value;
-          emit();
-        });
-        elevationSubscription = accelerometerEventStream().listen((event) {
-          final horizontal = sqrt(event.x * event.x + event.y * event.y);
-          final pitch = atan2(-event.z, horizontal) * 180 / pi;
-          elevation = pitch.clamp(0, 90).toDouble();
-          emit();
-        });
+        headingSubscription = headingStream.listen(
+          (value) {
+            heading = value;
+            emit();
+          },
+          onError: (Object error, StackTrace stackTrace) {
+            if (!_isMissingSensorPlugin(error)) {
+              controller.addError(error, stackTrace);
+            }
+          },
+        );
+        elevationSubscription = accelerometerEventStream().listen(
+          (event) {
+            final horizontal = sqrt(event.x * event.x + event.y * event.y);
+            final pitch = atan2(-event.z, horizontal) * 180 / pi;
+            elevation = pitch.clamp(0, 90).toDouble();
+            emit();
+          },
+          onError: (Object error, StackTrace stackTrace) {
+            if (_isMissingSensorPlugin(error)) {
+              return;
+            }
+            controller.addError(error, stackTrace);
+          },
+          cancelOnError: false,
+        );
       },
       onCancel: () async {
-        await headingSubscription?.cancel();
-        await elevationSubscription?.cancel();
+        try {
+          await headingSubscription?.cancel();
+        } on MissingPluginException {
+          // Ignore unsupported sensor plugin cancellation on this platform.
+        }
+        try {
+          await elevationSubscription?.cancel();
+        } on MissingPluginException {
+          // Ignore unsupported sensor plugin cancellation on this platform.
+        }
       },
     );
     return controller.stream;
@@ -129,4 +179,9 @@ class SatelliteObserverService {
       );
     }
   }
+}
+
+bool _isMissingSensorPlugin(Object error) {
+  return error is MissingPluginException ||
+      error.toString().contains('dev.fluttercommunity.plus/sensors');
 }

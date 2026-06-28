@@ -615,6 +615,8 @@ class LocalDatabaseService {
       callsign: map['radio_callsign'] ?? RadioProfile.defaults.callsign,
       qth: map['radio_qth'] ?? RadioProfile.defaults.qth,
       grid: map['radio_grid'] ?? RadioProfile.defaults.grid,
+      latitude: double.tryParse(map['radio_latitude'] ?? ''),
+      longitude: double.tryParse(map['radio_longitude'] ?? ''),
       licenseClass:
           map['radio_license_class'] ?? RadioProfile.defaults.licenseClass,
       licenseExpiry:
@@ -629,6 +631,8 @@ class LocalDatabaseService {
         'radio_callsign': profile.callsign,
         'radio_qth': profile.qth,
         'radio_grid': profile.grid,
+        'radio_latitude': profile.latitude?.toString() ?? '',
+        'radio_longitude': profile.longitude?.toString() ?? '',
         'radio_license_class': profile.licenseClass,
         'radio_license_expiry': profile.licenseExpiry,
       };

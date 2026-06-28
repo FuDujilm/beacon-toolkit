@@ -1,12 +1,18 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
+import 'package:dio/dio.dart';
+import 'package:geolocator/geolocator.dart';
 import '../../models/radio_profile.dart';
 import '../../services/auth_service.dart';
+import '../../services/beacon_radio_profile_service.dart';
 import '../../services/local_data_backup_service.dart';
 import '../../services/local_database_service.dart';
+import '../../services/grid_locator_service.dart';
 import '../../services/theme_controller.dart';
 import '../../services/user_settings_service.dart';
+import 'common_tools_settings_page.dart';
 import 'discovery_settings_page.dart';
+import 'qrz_settings_page.dart';
 import 'theme_page.dart';
 
 class ProfilePage extends StatefulWidget {
@@ -18,20 +24,28 @@ class ProfilePage extends StatefulWidget {
 
 class _ProfilePageState extends State<ProfilePage> {
   final _userSettingsService = UserSettingsService();
+  final _beaconRadioProfileService = BeaconRadioProfileService();
   final _backupService = LocalDataBackupService();
   final _databaseService = LocalDatabaseService();
+  final _gridLocatorService = const GridLocatorService();
   final _callsignController = TextEditingController();
   final _qthController = TextEditingController();
   final _gridController = TextEditingController();
+  final _latitudeController = TextEditingController();
+  final _longitudeController = TextEditingController();
   final _licenseExpiryController = TextEditingController();
 
   bool _isLoading = true;
   bool _isSaving = false;
+  bool _isLocating = false;
   bool _isLoggedIn = false;
   bool _enableWrongQuestionWeight = false;
   double _dailyQuestionLimit = 10;
   String _examQuestionPreference = 'SYSTEM_PRESET';
   String _licenseClass = 'A 级';
+  String? _accountEmail;
+  String? _accountName;
+  String? _accountAvatarUrl;
 
   @override
   void initState() {
@@ -44,22 +58,41 @@ class _ProfilePageState extends State<ProfilePage> {
     _callsignController.dispose();
     _qthController.dispose();
     _gridController.dispose();
+    _latitudeController.dispose();
+    _longitudeController.dispose();
     _licenseExpiryController.dispose();
     super.dispose();
   }
 
   Future<void> _loadSettings() async {
-    final isLoggedIn = await context.read<AuthService>().isLoggedIn();
+    final authService = context.read<AuthService>();
+    final isLoggedIn = await authService.isLoggedIn();
+    final accountInfo =
+        isLoggedIn ? await authService.getCurrentUserInfo() : null;
     final settings = await _userSettingsService.getSettings();
-    final radioProfile = await _databaseService.getRadioProfile();
-    final callsign =
-        (settings['callsign'] as String?)?.trim().isNotEmpty == true
-            ? settings['callsign'] as String
-            : radioProfile.callsign;
+    var radioProfile = await _databaseService.getRadioProfile();
+    if (isLoggedIn) {
+      try {
+        final onlineProfile =
+            await _beaconRadioProfileService.getRadioProfile();
+        if (onlineProfile != null) {
+          radioProfile = onlineProfile;
+          await _databaseService.saveRadioProfile(onlineProfile);
+        }
+      } catch (_) {
+        // beacon-api profile sync is optional; local profile remains usable.
+      }
+    }
+    final callsign = radioProfile.callsign;
 
     if (!mounted) return;
     setState(() {
       _isLoggedIn = isLoggedIn;
+      _accountEmail = accountInfo?['email']?.toString();
+      _accountName = accountInfo?['name']?.toString() ??
+          accountInfo?['display_name']?.toString();
+      _accountAvatarUrl = accountInfo?['image']?.toString() ??
+          accountInfo?['avatar_url']?.toString();
       _callsignController.text =
           callsign == RadioProfile.defaults.callsign ? '' : callsign;
       _qthController.text =
@@ -67,6 +100,12 @@ class _ProfilePageState extends State<ProfilePage> {
       _gridController.text = radioProfile.grid == RadioProfile.defaults.grid
           ? ''
           : radioProfile.grid;
+      _latitudeController.text = radioProfile.latitude == null
+          ? ''
+          : _formatCoordinate(radioProfile.latitude!);
+      _longitudeController.text = radioProfile.longitude == null
+          ? ''
+          : _formatCoordinate(radioProfile.longitude!);
       _licenseClass = radioProfile.licenseClass;
       _licenseExpiryController.text =
           radioProfile.licenseExpiry == RadioProfile.defaults.licenseExpiry
@@ -88,42 +127,70 @@ class _ProfilePageState extends State<ProfilePage> {
 
   Future<void> _saveSettings() async {
     setState(() => _isSaving = true);
+    final saved = <String>[];
+    final skipped = <String>[];
     try {
       final learningPreferences = {
         'enableWrongQuestionWeight': _enableWrongQuestionWeight,
         'examQuestionPreference': _examQuestionPreference,
         'dailyPracticeTarget': _dailyQuestionLimit.round(),
       };
-
-      await _userSettingsService.updateSettings(
-        _isLoggedIn
-            ? {
-                ...learningPreferences,
-                'callsign': _callsignController.text.trim(),
-              }
-            : learningPreferences,
-      );
-      await _databaseService.saveRadioProfile(
-        RadioProfile(
-          callsign: _callsignController.text.trim().isEmpty
-              ? RadioProfile.defaults.callsign
-              : _callsignController.text.trim().toUpperCase(),
-          qth: _qthController.text.trim().isEmpty
-              ? RadioProfile.defaults.qth
-              : _qthController.text.trim(),
-          grid: _gridController.text.trim().isEmpty
-              ? RadioProfile.defaults.grid
-              : _gridController.text.trim().toUpperCase(),
-          licenseClass: _licenseClass,
-          licenseExpiry: _licenseExpiryController.text.trim().isEmpty
-              ? RadioProfile.defaults.licenseExpiry
-              : _licenseExpiryController.text.trim(),
+      final radioProfile = RadioProfile(
+        callsign: _callsignController.text.trim().isEmpty
+            ? RadioProfile.defaults.callsign
+            : _callsignController.text.trim().toUpperCase(),
+        qth: _qthController.text.trim().isEmpty
+            ? RadioProfile.defaults.qth
+            : _qthController.text.trim(),
+        grid: _gridController.text.trim().isEmpty
+            ? RadioProfile.defaults.grid
+            : _gridController.text.trim().toUpperCase(),
+        latitude: _parseCoordinate(
+          _latitudeController.text,
+          min: -90,
+          max: 90,
+          label: '纬度',
         ),
+        longitude: _parseCoordinate(
+          _longitudeController.text,
+          min: -180,
+          max: 180,
+          label: '经度',
+        ),
+        licenseClass: _licenseClass,
+        licenseExpiry: _licenseExpiryController.text.trim().isEmpty
+            ? RadioProfile.defaults.licenseExpiry
+            : _licenseExpiryController.text.trim(),
       );
+
+      await _databaseService.saveRadioProfile(radioProfile);
+      saved.add('本地电台资料');
+
+      if (_isLoggedIn) {
+        try {
+          await _beaconRadioProfileService.saveRadioProfile(radioProfile);
+          saved.add('beacon-api 电台资料');
+        } catch (e) {
+          skipped.add('beacon-api 电台资料（${_friendlySaveError(e)}）');
+        }
+      }
+
+      try {
+        await _userSettingsService.updateSettings(
+          learningPreferences,
+        );
+        saved.add('学习偏好');
+      } catch (e) {
+        skipped.add('在线学习偏好（${_friendlySaveError(e)}）');
+      }
 
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('设置已保存')),
+        SnackBar(
+          content: Text(_saveSummary(saved: saved, skipped: skipped)),
+          backgroundColor: skipped.isEmpty ? null : Colors.orange,
+          duration: const Duration(seconds: 5),
+        ),
       );
     } catch (e) {
       if (!mounted) return;
@@ -135,10 +202,121 @@ class _ProfilePageState extends State<ProfilePage> {
     }
   }
 
+  Future<void> _fillFromDeviceLocation() async {
+    if (_isLocating) return;
+    setState(() => _isLocating = true);
+    try {
+      final serviceEnabled = await Geolocator.isLocationServiceEnabled();
+      if (!serviceEnabled) {
+        throw const FormatException('定位服务未开启');
+      }
+
+      var permission = await Geolocator.checkPermission();
+      if (permission == LocationPermission.denied) {
+        permission = await Geolocator.requestPermission();
+      }
+      if (permission == LocationPermission.denied) {
+        throw const FormatException('定位权限未授权');
+      }
+      if (permission == LocationPermission.deniedForever) {
+        throw const FormatException('定位权限被永久拒绝，请在系统设置中开启');
+      }
+
+      final position = await Geolocator.getCurrentPosition(
+        locationSettings: const LocationSettings(
+          accuracy: LocationAccuracy.high,
+          timeLimit: Duration(seconds: 8),
+        ),
+      );
+      final grid = _gridLocatorService.encodeMaidenhead(
+        latitude: position.latitude,
+        longitude: position.longitude,
+        precision: 6,
+      );
+      final qth =
+          '当前位置 ${position.latitude.toStringAsFixed(4)}, ${position.longitude.toStringAsFixed(4)}';
+
+      if (!mounted) return;
+      setState(() {
+        _qthController.text = qth;
+        _gridController.text = grid.toUpperCase();
+        _latitudeController.text = _formatCoordinate(position.latitude);
+        _longitudeController.text = _formatCoordinate(position.longitude);
+      });
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('已根据设备定位填写 QTH、Grid 和经纬度')),
+      );
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('定位失败: $e'), backgroundColor: Colors.red),
+      );
+    } finally {
+      if (mounted) setState(() => _isLocating = false);
+    }
+  }
+
+  double? _parseCoordinate(
+    String value, {
+    required double min,
+    required double max,
+    required String label,
+  }) {
+    final trimmed = value.trim();
+    if (trimmed.isEmpty) return null;
+    final parsed = double.tryParse(trimmed);
+    if (parsed == null || parsed < min || parsed > max) {
+      throw FormatException('$label 必须在 $min 到 $max 之间');
+    }
+    return parsed;
+  }
+
+  String _formatCoordinate(double value) {
+    return value.toStringAsFixed(6);
+  }
+
+  String _saveSummary({
+    required List<String> saved,
+    required List<String> skipped,
+  }) {
+    final parts = <String>[];
+    if (saved.isNotEmpty) {
+      parts.add('已保存：${saved.join('、')}');
+    }
+    if (skipped.isNotEmpty) {
+      parts.add('未保存：${skipped.join('、')}');
+    }
+    return parts.isEmpty ? '没有可保存的设置' : parts.join('\n');
+  }
+
+  String _friendlySaveError(Object error) {
+    if (error is DioException) {
+      final statusCode = error.response?.statusCode;
+      if (statusCode != null) {
+        return 'API $statusCode';
+      }
+      if (error.type == DioExceptionType.connectionTimeout ||
+          error.type == DioExceptionType.receiveTimeout ||
+          error.type == DioExceptionType.sendTimeout) {
+        return 'API 超时';
+      }
+      if (error.type == DioExceptionType.connectionError) {
+        return 'API 不可用';
+      }
+    }
+    final message = error.toString();
+    return message.length > 60 ? '${message.substring(0, 60)}...' : message;
+  }
+
   Future<void> _logout() async {
     await context.read<AuthService>().logout();
     if (!mounted) return;
-    setState(() => _isLoggedIn = false);
+    setState(() {
+      _isLoggedIn = false;
+      _accountEmail = null;
+      _accountName = null;
+      _accountAvatarUrl = null;
+    });
     ScaffoldMessenger.of(context).showSnackBar(
       const SnackBar(content: Text('已退出登录')),
     );
@@ -155,6 +333,12 @@ class _ProfilePageState extends State<ProfilePage> {
         );
       }
       if (!mounted) return;
+      setState(() {
+        _accountEmail = user['email']?.toString();
+        _accountName = user['name']?.toString();
+        _accountAvatarUrl =
+            user['image']?.toString() ?? user['avatar_url']?.toString();
+      });
       await _loadSettings();
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
@@ -212,21 +396,35 @@ class _ProfilePageState extends State<ProfilePage> {
                     padding: const EdgeInsets.all(16.0),
                     child: Row(
                       children: [
-                        const CircleAvatar(
+                        _AccountAvatar(
+                          imageUrl: _accountAvatarUrl,
+                          label: _accountName ?? _accountEmail,
                           radius: 32,
-                          child: Icon(Icons.person, size: 32),
                         ),
                         const SizedBox(width: 16),
                         Expanded(
                           child: Column(
                             crossAxisAlignment: CrossAxisAlignment.start,
                             children: [
-                              const Text('已登录账号',
-                                  style: TextStyle(
-                                      fontWeight: FontWeight.bold,
-                                      fontSize: 18)),
-                              Text('账号资料和 AI 偏好仅登录后展示',
-                                  style: TextStyle(color: Colors.grey[600])),
+                              Text(
+                                _accountEmail?.trim().isNotEmpty == true
+                                    ? _accountEmail!
+                                    : '已登录账号',
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                                style: const TextStyle(
+                                  fontWeight: FontWeight.bold,
+                                  fontSize: 18,
+                                ),
+                              ),
+                              Text(
+                                _accountName?.trim().isNotEmpty == true
+                                    ? _accountName!
+                                    : 'OpenOIDC 已登录',
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                                style: TextStyle(color: Colors.grey[600]),
+                              ),
                             ],
                           ),
                         ),
@@ -276,6 +474,20 @@ class _ProfilePageState extends State<ProfilePage> {
                   ),
                 const Divider(),
                 const _SectionTitle('电台资料'),
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
+                  child: OutlinedButton.icon(
+                    onPressed: _isLocating ? null : _fillFromDeviceLocation,
+                    icon: _isLocating
+                        ? const SizedBox(
+                            width: 18,
+                            height: 18,
+                            child: CircularProgressIndicator(strokeWidth: 2),
+                          )
+                        : const Icon(Icons.my_location),
+                    label: Text(_isLocating ? '定位中...' : '根据设备定位填写'),
+                  ),
+                ),
                 ListTile(
                   leading: const Icon(Icons.badge),
                   title: const Text('电台呼号'),
@@ -327,6 +539,46 @@ class _ProfilePageState extends State<ProfilePage> {
                   ),
                 ),
                 ListTile(
+                  leading: const Icon(Icons.explore),
+                  title: const Text('纬度'),
+                  subtitle: const Text('设备定位或手动填写，范围 -90 到 90'),
+                  trailing: SizedBox(
+                    width: 130,
+                    child: TextField(
+                      controller: _latitudeController,
+                      textAlign: TextAlign.end,
+                      keyboardType: const TextInputType.numberWithOptions(
+                        signed: true,
+                        decimal: true,
+                      ),
+                      decoration: const InputDecoration(
+                        border: InputBorder.none,
+                        hintText: '39.904200',
+                      ),
+                    ),
+                  ),
+                ),
+                ListTile(
+                  leading: const Icon(Icons.explore_outlined),
+                  title: const Text('经度'),
+                  subtitle: const Text('设备定位或手动填写，范围 -180 到 180'),
+                  trailing: SizedBox(
+                    width: 130,
+                    child: TextField(
+                      controller: _longitudeController,
+                      textAlign: TextAlign.end,
+                      keyboardType: const TextInputType.numberWithOptions(
+                        signed: true,
+                        decimal: true,
+                      ),
+                      decoration: const InputDecoration(
+                        border: InputBorder.none,
+                        hintText: '116.407400',
+                      ),
+                    ),
+                  ),
+                ),
+                ListTile(
                   leading: const Icon(Icons.workspace_premium),
                   title: const Text('执照等级'),
                   trailing: DropdownButton<String>(
@@ -371,6 +623,17 @@ class _ProfilePageState extends State<ProfilePage> {
                   ),
                 ),
                 ListTile(
+                  leading: const Icon(Icons.dashboard_customize),
+                  title: const Text('常用工具设置'),
+                  subtitle: const Text('配置首页常用工具入口和展示顺序'),
+                  trailing: const Icon(Icons.chevron_right),
+                  onTap: () => Navigator.of(context).push(
+                    MaterialPageRoute(
+                      builder: (_) => const CommonToolsSettingsPage(),
+                    ),
+                  ),
+                ),
+                ListTile(
                   leading: const Icon(Icons.explore),
                   title: const Text('发现源配置'),
                   subtitle: const Text('地区推荐、资讯源、卫星过境 TLE'),
@@ -378,6 +641,17 @@ class _ProfilePageState extends State<ProfilePage> {
                   onTap: () => Navigator.of(context).push(
                     MaterialPageRoute(
                       builder: (_) => const DiscoverySettingsPage(),
+                    ),
+                  ),
+                ),
+                ListTile(
+                  leading: const Icon(Icons.travel_explore),
+                  title: const Text('QRZ.COM 配置'),
+                  subtitle: const Text('呼号查询账号、密码和查询路径'),
+                  trailing: const Icon(Icons.chevron_right),
+                  onTap: () => Navigator.of(context).push(
+                    MaterialPageRoute(
+                      builder: (_) => const QrzSettingsPage(),
                     ),
                   ),
                 ),
@@ -480,6 +754,51 @@ class _ProfilePageState extends State<ProfilePage> {
               ],
             ),
     );
+  }
+}
+
+class _AccountAvatar extends StatelessWidget {
+  final String? imageUrl;
+  final String? label;
+  final double radius;
+
+  const _AccountAvatar({
+    required this.imageUrl,
+    required this.label,
+    required this.radius,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    final url = imageUrl?.trim() ?? '';
+    final uri = Uri.tryParse(url);
+    final fallback = CircleAvatar(
+      radius: radius,
+      backgroundColor: scheme.primaryContainer,
+      foregroundColor: scheme.onPrimaryContainer,
+      child: Text(
+        _avatarLabel(label),
+        style: TextStyle(fontSize: radius * 0.72, fontWeight: FontWeight.w900),
+      ),
+    );
+    if (url.isEmpty || uri == null || !uri.hasScheme) return fallback;
+
+    return ClipOval(
+      child: Image.network(
+        url,
+        width: radius * 2,
+        height: radius * 2,
+        fit: BoxFit.cover,
+        errorBuilder: (_, __, ___) => fallback,
+      ),
+    );
+  }
+
+  String _avatarLabel(String? value) {
+    final trimmed = value?.trim();
+    if (trimmed == null || trimmed.isEmpty) return '人';
+    return trimmed.characters.first.toUpperCase();
   }
 }
 

@@ -323,6 +323,8 @@ class _SatelliteSubscribedMapPageState
                           heading: _heading,
                         ),
                         const SizedBox(height: 12),
+                        _DopplerEstimatePanel(pass: focusedItem.nextPass!),
+                        const SizedBox(height: 12),
                         _TrackerPanel(
                           title: '聚焦卫星',
                           icon: Icons.satellite_alt,
@@ -624,6 +626,156 @@ class _SkyRadarPanel extends StatelessWidget {
       ),
     );
   }
+}
+
+class _DopplerEstimatePanel extends StatelessWidget {
+  final SatellitePass pass;
+
+  const _DopplerEstimatePanel({required this.pass});
+
+  static const _bands = <_DopplerBand>[
+    _DopplerBand(label: '2m', frequencyHz: 145800000),
+    _DopplerBand(label: '70cm', frequencyHz: 435000000),
+    _DopplerBand(label: '23cm', frequencyHz: 1260000000),
+  ];
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = radioThemeColors(context);
+    return _TrackerPanel(
+      title: '多普勒频移',
+      icon: Icons.graphic_eq,
+      child: StreamBuilder<DateTime>(
+        stream: Stream<DateTime>.periodic(
+          const Duration(seconds: 1),
+          (_) => DateTime.now(),
+        ),
+        builder: (context, snapshot) {
+          final now = snapshot.data ?? DateTime.now();
+          final currentPoint = _currentDopplerPoint(pass, now);
+          final points = [
+            if (currentPoint != null) currentPoint,
+            ..._dopplerPoints(pass),
+          ];
+          if (points.isEmpty) {
+            return Text(
+              '当前过境数据缺少有效多普勒采样。',
+              style: TextStyle(color: colors.muted),
+            );
+          }
+          return Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                pass.isActive
+                    ? '正在按当前时间实时估算频移，下面同时保留 AOS / TCA / LOS 预测值。'
+                    : '当前未过境，先显示下一次过境的 AOS / TCA / LOS 预测值。',
+                style: TextStyle(color: colors.muted, height: 1.45),
+              ),
+              const SizedBox(height: 12),
+              SingleChildScrollView(
+                scrollDirection: Axis.horizontal,
+                child: DataTable(
+                  headingRowHeight: 32,
+                  dataRowMinHeight: 42,
+                  dataRowMaxHeight: 50,
+                  columnSpacing: 14,
+                  horizontalMargin: 8,
+                  columns: const [
+                    DataColumn(label: Text('时刻')),
+                    DataColumn(label: Text('因子')),
+                    DataColumn(label: Text('2m 偏移')),
+                    DataColumn(label: Text('70cm 偏移')),
+                    DataColumn(label: Text('23cm 偏移')),
+                  ],
+                  rows: [
+                    for (final point in points)
+                      DataRow(
+                        selected: point.isCurrent,
+                        cells: [
+                          DataCell(Text(point.label)),
+                          DataCell(Text(point.factor.toStringAsFixed(8))),
+                          for (final band in _bands)
+                            DataCell(Text(_dopplerOffset(
+                              band.frequencyHz,
+                              point.factor,
+                            ))),
+                        ],
+                      ),
+                  ],
+                ),
+              ),
+              const SizedBox(height: 10),
+              Wrap(
+                spacing: 8,
+                runSpacing: 8,
+                children: [
+                  for (final band in _bands)
+                    _DopplerBandChip(
+                      label: band.label,
+                      frequency: _formatDopplerBaseFrequency(band.frequencyHz),
+                    ),
+                ],
+              ),
+            ],
+          );
+        },
+      ),
+    );
+  }
+}
+
+class _DopplerBandChip extends StatelessWidget {
+  final String label;
+  final String frequency;
+
+  const _DopplerBandChip({
+    required this.label,
+    required this.frequency,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = radioThemeColors(context);
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 7),
+      decoration: BoxDecoration(
+        color: const Color(0xff3f8cff).withValues(alpha: 0.12),
+        borderRadius: BorderRadius.circular(8),
+        border: Border.all(color: colors.border),
+      ),
+      child: Text(
+        '$label · $frequency',
+        style: TextStyle(
+          color: colors.text,
+          fontSize: 12,
+          fontWeight: FontWeight.w800,
+        ),
+      ),
+    );
+  }
+}
+
+class _DopplerBand {
+  final String label;
+  final int frequencyHz;
+
+  const _DopplerBand({
+    required this.label,
+    required this.frequencyHz,
+  });
+}
+
+class _DopplerPassPoint {
+  final String label;
+  final double factor;
+  final bool isCurrent;
+
+  const _DopplerPassPoint({
+    required this.label,
+    required this.factor,
+    this.isCurrent = false,
+  });
 }
 
 class _SubscribedWorldMapPanel extends StatelessWidget {
@@ -1743,4 +1895,83 @@ class _SkyRadarPainter extends CustomPainter {
 double _bearingDelta(double heading, double target) {
   var delta = (target - heading + 540) % 360 - 180;
   return delta;
+}
+
+List<_DopplerPassPoint> _dopplerPoints(SatellitePass pass) {
+  final fallback = pass.dopplerFactor ?? 1.0;
+  final samples = pass.lookSamples
+      .where((sample) => _isFiniteFactor(sample.dopplerFactor))
+      .toList(growable: false);
+  if (samples.isEmpty) {
+    if (!_isFiniteFactor(fallback)) return const [];
+    return [
+      _DopplerPassPoint(label: 'AOS', factor: fallback),
+      _DopplerPassPoint(label: 'TCA', factor: fallback),
+      _DopplerPassPoint(label: 'LOS', factor: fallback),
+    ];
+  }
+
+  final tca = samples.reduce((a, b) {
+    final aDelta = a.time.difference(pass.maxElevationAt).inSeconds.abs();
+    final bDelta = b.time.difference(pass.maxElevationAt).inSeconds.abs();
+    return aDelta <= bDelta ? a : b;
+  });
+
+  return [
+    _DopplerPassPoint(label: 'AOS', factor: samples.first.dopplerFactor!),
+    _DopplerPassPoint(label: 'TCA', factor: tca.dopplerFactor!),
+    _DopplerPassPoint(label: 'LOS', factor: samples.last.dopplerFactor!),
+  ];
+}
+
+_DopplerPassPoint? _currentDopplerPoint(SatellitePass pass, DateTime now) {
+  if (now.isBefore(pass.aos) || now.isAfter(pass.los)) return null;
+  final factor = _interpolatedDopplerFactor(pass, now);
+  if (factor == null) return null;
+  return _DopplerPassPoint(
+    label: '实时',
+    factor: factor,
+    isCurrent: true,
+  );
+}
+
+double? _interpolatedDopplerFactor(SatellitePass pass, DateTime target) {
+  final samples = pass.lookSamples
+      .where((sample) => _isFiniteFactor(sample.dopplerFactor))
+      .toList(growable: false);
+  if (samples.isEmpty) {
+    return _isFiniteFactor(pass.dopplerFactor) ? pass.dopplerFactor : null;
+  }
+  if (!target.isAfter(samples.first.time)) return samples.first.dopplerFactor;
+  if (!target.isBefore(samples.last.time)) return samples.last.dopplerFactor;
+
+  for (var index = 1; index < samples.length; index++) {
+    final previous = samples[index - 1];
+    final next = samples[index];
+    if (target.isBefore(previous.time) || target.isAfter(next.time)) {
+      continue;
+    }
+    final span = next.time.difference(previous.time).inMilliseconds;
+    if (span <= 0) return next.dopplerFactor;
+    final elapsed = target.difference(previous.time).inMilliseconds;
+    final ratio = (elapsed / span).clamp(0.0, 1.0);
+    return previous.dopplerFactor! +
+        (next.dopplerFactor! - previous.dopplerFactor!) * ratio;
+  }
+  return pass.dopplerFactor;
+}
+
+String _dopplerOffset(int frequencyHz, double factor) {
+  if (!factor.isFinite) return '--';
+  final khz = frequencyHz * (factor - 1) / 1000;
+  final sign = khz >= 0 ? '+' : '';
+  return '$sign${khz.toStringAsFixed(1)} kHz';
+}
+
+String _formatDopplerBaseFrequency(int frequencyHz) {
+  return '${(frequencyHz / 1000000).toStringAsFixed(3)} MHz';
+}
+
+bool _isFiniteFactor(double? value) {
+  return value != null && value.isFinite;
 }

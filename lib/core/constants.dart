@@ -30,6 +30,16 @@ class AppConstants {
   // ---- Secure storage keys ----
   static const String tokenKey = 'auth_token';
   static const String refreshTokenKey = 'refresh_token';
+  static const String cachedUserInfoKey = 'cached_user_info';
   static const String beaconApiBaseUrlKey = 'beacon_api_base_url';
   static const String tiandituTokenKey = 'tianditu_token';
+  static const String qrzUsernameKey = 'qrz_username';
+  static const String qrzPasswordKey = 'qrz_password';
+  static const String qrzLookupModeKey = 'qrz_lookup_mode';
+  static const String qrzDebugEnabledKey = 'qrz_debug_enabled';
+  static const String qrzSessionKey = 'qrz_session_key';
+  static const String llmEnabledKey = 'llm_enabled';
+  static const String llmBaseUrlKey = 'llm_base_url';
+  static const String llmApiKeyKey = 'llm_api_key';
+  static const String llmModelKey = 'llm_model';
 }

@@ -309,22 +309,20 @@ class _SpectrumBandRow extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return IntrinsicHeight(
-      child: Row(
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        children: [
-          SizedBox(
-            width: 72,
-            child: _AxisSegment(
-              band: data.band,
-              isFirst: isFirst,
-              isLast: isLast,
-            ),
+    return Row(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        SizedBox(
+          width: 72,
+          child: _AxisSegment(
+            band: data.band,
+            isFirst: isFirst,
+            isLast: isLast,
           ),
-          const SizedBox(width: 8),
-          Expanded(child: _BandCard(data: data)),
-        ],
-      ),
+        ),
+        const SizedBox(width: 8),
+        Expanded(child: _BandCard(data: data)),
+      ],
     );
   }
 }
@@ -343,67 +341,70 @@ class _AxisSegment extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
-    return Stack(
-      children: [
-        Positioned.fill(
-          child: Row(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              SizedBox(
-                width: 32,
-                child: Padding(
-                  padding: const EdgeInsets.only(top: 12),
-                  child: Text(
-                    _axisLabelFor(band),
-                    textAlign: TextAlign.right,
-                    style: TextStyle(
-                      color: scheme.onSurfaceVariant,
-                      fontSize: 12,
-                      fontWeight: FontWeight.w700,
+    return SizedBox(
+      height: 164,
+      child: Stack(
+        children: [
+          Positioned.fill(
+            child: Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                SizedBox(
+                  width: 32,
+                  child: Padding(
+                    padding: const EdgeInsets.only(top: 12),
+                    child: Text(
+                      _axisLabelFor(band),
+                      textAlign: TextAlign.right,
+                      style: TextStyle(
+                        color: scheme.onSurfaceVariant,
+                        fontSize: 12,
+                        fontWeight: FontWeight.w700,
+                      ),
                     ),
                   ),
                 ),
-              ),
-              const SizedBox(width: 6),
-              Expanded(
-                child: Container(
-                  margin: const EdgeInsets.only(top: 20),
-                  height: 1,
-                  color: scheme.outlineVariant,
-                ),
-              ),
-            ],
-          ),
-        ),
-        Positioned(
-          left: 46,
-          top: isFirst ? 8 : 0,
-          bottom: isLast ? 20 : 0,
-          width: 18,
-          child: DecoratedBox(
-            decoration: BoxDecoration(
-              borderRadius: BorderRadius.vertical(
-                top: isFirst ? const Radius.circular(999) : Radius.zero,
-                bottom: isLast ? const Radius.circular(999) : Radius.zero,
-              ),
-              boxShadow: [
-                BoxShadow(
-                  color: scheme.shadow.withValues(alpha: 0.10),
-                  blurRadius: 2,
-                  offset: const Offset(0, 1),
+                const SizedBox(width: 6),
+                Expanded(
+                  child: Container(
+                    margin: const EdgeInsets.only(top: 20),
+                    height: 1,
+                    color: scheme.outlineVariant,
+                  ),
                 ),
               ],
             ),
-            child: ClipRRect(
-              borderRadius: BorderRadius.vertical(
-                top: isFirst ? const Radius.circular(999) : Radius.zero,
-                bottom: isLast ? const Radius.circular(999) : Radius.zero,
+          ),
+          Positioned(
+            left: 46,
+            top: isFirst ? 8 : 0,
+            bottom: isLast ? 20 : 0,
+            width: 18,
+            child: DecoratedBox(
+              decoration: BoxDecoration(
+                borderRadius: BorderRadius.vertical(
+                  top: isFirst ? const Radius.circular(999) : Radius.zero,
+                  bottom: isLast ? const Radius.circular(999) : Radius.zero,
+                ),
+                boxShadow: [
+                  BoxShadow(
+                    color: scheme.shadow.withValues(alpha: 0.10),
+                    blurRadius: 2,
+                    offset: const Offset(0, 1),
+                  ),
+                ],
               ),
-              child: ColoredBox(color: band.color),
+              child: ClipRRect(
+                borderRadius: BorderRadius.vertical(
+                  top: isFirst ? const Radius.circular(999) : Radius.zero,
+                  bottom: isLast ? const Radius.circular(999) : Radius.zero,
+                ),
+                child: ColoredBox(color: band.color),
+              ),
             ),
           ),
-        ),
-      ],
+        ],
+      ),
     );
   }
 }
@@ -438,42 +439,51 @@ class _BandCard extends StatelessWidget {
             mainAxisAlignment: MainAxisAlignment.center,
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              Row(
-                children: [
-                  SizedBox(
-                    width: 80,
-                    child: FittedBox(
-                      fit: BoxFit.scaleDown,
-                      alignment: Alignment.centerLeft,
-                      child: Text(
-                        band.name,
-                        maxLines: 1,
-                        softWrap: false,
-                        style: TextStyle(
-                          color: band.color,
-                          fontSize: 20,
-                          fontWeight: FontWeight.w900,
-                        ),
-                      ),
+              LayoutBuilder(
+                builder: (context, constraints) {
+                  final compact = constraints.maxWidth < 250;
+                  final name = Text(
+                    band.name,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: TextStyle(
+                      color: band.color,
+                      fontSize: compact ? 22 : 24,
+                      fontWeight: FontWeight.w900,
+                      height: 1.05,
                     ),
-                  ),
-                  const SizedBox(width: 8),
-                  Expanded(
-                    child: FittedBox(
-                      fit: BoxFit.scaleDown,
-                      alignment: Alignment.centerLeft,
-                      child: Text(
-                        band.rangeLabel,
-                        maxLines: 1,
-                        softWrap: false,
-                        style: const TextStyle(
-                          fontSize: 13,
-                          fontWeight: FontWeight.w900,
-                        ),
-                      ),
+                  );
+                  final range = Text(
+                    band.rangeLabel,
+                    maxLines: compact ? 2 : 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: TextStyle(
+                      color: scheme.onSurface,
+                      fontSize: compact ? 14 : 15,
+                      fontWeight: FontWeight.w900,
+                      height: 1.15,
                     ),
-                  ),
-                ],
+                  );
+
+                  if (compact) {
+                    return Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        name,
+                        const SizedBox(height: 5),
+                        range,
+                      ],
+                    );
+                  }
+
+                  return Row(
+                    children: [
+                      Flexible(flex: 5, child: name),
+                      const SizedBox(width: 10),
+                      Flexible(flex: 6, child: range),
+                    ],
+                  );
+                },
               ),
               const SizedBox(height: 12),
               Wrap(

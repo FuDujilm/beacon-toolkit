@@ -4,18 +4,29 @@ import '../developer/developer_page.dart';
 import '../home/calendar_page.dart';
 import '../home/leaderboard_page.dart';
 import '../practice/practice_page.dart';
+import '../../models/home_tool_entry.dart';
 import '../../models/practice_history.dart';
 import '../../models/radio_profile.dart';
+import '../../models/sepc_daily_report.dart';
+import '../../models/sepc_k_index.dart';
 import '../../services/exam_service.dart';
+import '../../services/home_tool_preferences_service.dart';
 import '../../services/local_database_service.dart';
+import '../../services/sepc_daily_report_service.dart';
+import '../../services/sepc_k_index_service.dart';
 import '../../services/user_settings_service.dart';
+import 'callsign_lookup_page.dart';
 import 'frequency_table_page.dart';
 import 'grid_map_page.dart';
+import 'propagation_forecast_page.dart';
 import 'radio_placeholder_page.dart';
-import 'radio_theme.dart';
+import 'radio_log_page.dart';
+import 'satellite_tracker_page.dart';
 
 class RadioHomePage extends StatefulWidget {
-  const RadioHomePage({super.key});
+  final VoidCallback? onOpenTools;
+
+  const RadioHomePage({super.key, this.onOpenTools});
 
   @override
   State<RadioHomePage> createState() => _RadioHomePageState();
@@ -25,6 +36,9 @@ class _RadioHomePageState extends State<RadioHomePage> {
   final _userSettingsService = UserSettingsService();
   final _examService = ExamService();
   final _databaseService = LocalDatabaseService();
+  final _homeToolPreferencesService = HomeToolPreferencesService();
+  final _sepcService = SepcDailyReportService();
+  final _kIndexService = SepcKIndexService();
   int _developerTapCount = 0;
   bool _examStatsLoading = true;
   int _todayAnswered = 0;
@@ -35,13 +49,55 @@ class _RadioHomePageState extends State<RadioHomePage> {
   int _recentExamPassed = 0;
   int _recentExamTotal = 0;
   String _currentLibraryName = '题库';
+  String _solarKp = 'Kp --';
+  String _solarF107 = 'F10.7 --';
+  String _solarSource = 'SEPC 中国';
+  List<String> _homeToolIds = List<String>.from(defaultHomeToolIds);
   RadioProfile _radioProfile = RadioProfile.defaults;
   DateTime? _lastDeveloperTapAt;
 
   @override
   void initState() {
     super.initState();
+    _loadHomeTools();
     _loadExamStats();
+    _loadSolarSummary();
+  }
+
+  @override
+  void didUpdateWidget(covariant RadioHomePage oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    _loadHomeTools();
+  }
+
+  Future<void> _loadHomeTools() async {
+    final ids = await _homeToolPreferencesService.getSelectedToolIds();
+    if (!mounted) return;
+    if (_sameStringList(ids, _homeToolIds)) return;
+    setState(() => _homeToolIds = ids);
+  }
+
+  Future<void> _loadSolarSummary() async {
+    SepcDailyReport? report;
+    SepcKIndexReport? kIndex;
+    try {
+      kIndex = await _kIndexService.fetchRecent(days: 1);
+    } catch (_) {}
+    try {
+      report = await _sepcService.fetchDailyReport();
+    } catch (_) {}
+
+    if (kIndex != null || report != null) {
+      if (!mounted) return;
+      setState(() {
+        final latestKp = kIndex?.latestValue?.toString() ?? report?.kp ?? '';
+        _solarKp = latestKp.isEmpty ? 'Kp --' : 'Kp $latestKp';
+        _solarF107 = report?.f107.isNotEmpty == true
+            ? 'F10.7 ${report!.f107}'
+            : 'F10.7 --';
+        _solarSource = kIndex != null ? 'SEPC K' : 'SEPC';
+      });
+    }
   }
 
   Future<void> _loadExamStats() async {
@@ -111,45 +167,46 @@ class _RadioHomePageState extends State<RadioHomePage> {
 
   @override
   Widget build(BuildContext context) {
-    final colors = radioThemeColors(context);
+    final scheme = Theme.of(context).colorScheme;
+    final selectedTools = _selectedHomeTools();
 
     return Scaffold(
-      backgroundColor: colors.page,
+      backgroundColor: scheme.surface,
       body: CustomScrollView(
         slivers: [
-          SliverAppBar(
-            backgroundColor: colors.appBar,
-            foregroundColor: colors.text,
-            pinned: true,
-            expandedHeight: 288,
-            leading: IconButton(
-              tooltip: '菜单',
-              onPressed: () {},
-              icon: const Icon(Icons.menu),
-            ),
-            actions: [
-              IconButton(
-                tooltip: '通知',
-                onPressed: () {},
-                icon: const Icon(Icons.notifications_none),
-              ),
-            ],
-            flexibleSpace: FlexibleSpaceBar(
-              background: _HeroPanel(
-                radioProfile: _radioProfile,
-                onTitleTap: _handleTitleTap,
+          SliverToBoxAdapter(
+            child: SizedBox(
+              height: 258,
+              child: _ConstrainedHomeContent(
+                padding: EdgeInsets.zero,
+                child: _HeroPanel(
+                  radioProfile: _radioProfile,
+                  onTitleTap: _handleTitleTap,
+                ),
               ),
             ),
           ),
-          SliverPadding(
-            padding: const EdgeInsets.fromLTRB(18, 18, 18, 110),
-            sliver: SliverList(
-              delegate: SliverChildListDelegate(
-                [
+          SliverToBoxAdapter(
+            child: _ConstrainedHomeContent(
+              padding: const EdgeInsets.fromLTRB(18, 14, 18, 118),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  _InfoGrid(
+                    solarKp: _solarKp,
+                    solarF107: _solarF107,
+                    solarSource: _solarSource,
+                    onSolarTap: () => Navigator.of(context).push(
+                      MaterialPageRoute(
+                        builder: (_) => const PropagationForecastPage(),
+                      ),
+                    ),
+                  ),
+                  const SizedBox(height: 18),
                   _SectionHeader(
                     title: '常用工具',
                     action: '全部工具',
-                    onTap: () {},
+                    onTap: widget.onOpenTools ?? () {},
                   ),
                   const SizedBox(height: 12),
                   GridView(
@@ -158,105 +215,28 @@ class _RadioHomePageState extends State<RadioHomePage> {
                     gridDelegate:
                         const SliverGridDelegateWithFixedCrossAxisCount(
                       crossAxisCount: 4,
-                      crossAxisSpacing: 10,
-                      mainAxisSpacing: 10,
-                      mainAxisExtent: 104,
+                      crossAxisSpacing: 8,
+                      mainAxisSpacing: 8,
+                      mainAxisExtent: 88,
                     ),
-                    children: [
-                      _ToolTile(
-                        title: '呼号查询',
-                        icon: Icons.search,
-                        color: const Color(0xff347cff),
-                        onTap: () => _openPlaceholder(
-                          context,
-                          '呼号查询',
-                          Icons.search,
-                          '查询电台呼号、QTH 与基础资料。',
-                        ),
-                      ),
-                      _ToolTile(
-                        title: 'QTH 定位',
-                        icon: Icons.public,
-                        color: const Color(0xff6a6dff),
-                        onTap: () => Navigator.of(context).push(
-                          MaterialPageRoute(
-                            builder: (_) => const GridMapPage(),
+                    children: selectedTools
+                        .map(
+                          (tool) => _ToolTile(
+                            title: tool.title,
+                            icon: tool.icon,
+                            color: tool.color,
+                            onTap: () => _openHomeTool(tool),
                           ),
-                        ),
-                      ),
-                      _ToolTile(
-                        title: '频率表',
-                        icon: Icons.radio,
-                        color: const Color(0xff38c77b),
-                        onTap: () => Navigator.of(context).push(
-                          MaterialPageRoute(
-                            builder: (_) => const FrequencyTablePage(),
-                          ),
-                        ),
-                      ),
-                      _ToolTile(
-                        title: '考试题库',
-                        icon: Icons.assignment,
-                        color: const Color(0xffffa33c),
-                        onTap: () => Navigator.of(context).push(
-                          MaterialPageRoute(
-                            builder: (_) => const PracticePage(),
-                          ),
-                        ),
-                      ),
-                      _ToolTile(
-                        title: '天线计算',
-                        icon: Icons.settings_input_antenna,
-                        color: const Color(0xff2196f3),
-                        onTap: () => _openPlaceholder(
-                          context,
-                          '天线计算',
-                          Icons.settings_input_antenna,
-                          '计算天线长度、增益与常见换算。',
-                        ),
-                      ),
-                      _ToolTile(
-                        title: '对讲计算',
-                        icon: Icons.calculate,
-                        color: const Color(0xffb26a2e),
-                        onTap: () => _openPlaceholder(
-                          context,
-                          '对讲计算',
-                          Icons.calculate,
-                          '中继频差、亚音与常用参数计算。',
-                        ),
-                      ),
-                      _ToolTile(
-                        title: '通联日志',
-                        icon: Icons.event_note,
-                        color: const Color(0xffca5d9a),
-                        onTap: () => _openPlaceholder(
-                          context,
-                          '通联日志',
-                          Icons.event_note,
-                          '记录 QSO、导出日志与同步统计。',
-                        ),
-                      ),
-                      _ToolTile(
-                        title: '学习日历',
-                        icon: Icons.calendar_month,
-                        color: const Color(0xff34aadc),
-                        onTap: () => Navigator.of(context).push(
-                          MaterialPageRoute(
-                            builder: (_) => const CalendarPage(),
-                          ),
-                        ),
-                      ),
-                    ],
+                        )
+                        .toList(),
                   ),
-                  const SizedBox(height: 22),
-                  const _InfoGrid(),
                   const SizedBox(height: 22),
                   _SectionHeader(
                     title: '考试训练',
-                    action: '进入题库',
+                    action: '查看统计',
                     onTap: () => Navigator.of(context).push(
-                      MaterialPageRoute(builder: (_) => const PracticePage()),
+                      MaterialPageRoute(
+                          builder: (_) => const LeaderboardPage()),
                     ),
                   ),
                   const SizedBox(height: 12),
@@ -304,6 +284,94 @@ class _RadioHomePageState extends State<RadioHomePage> {
       ),
     );
   }
+
+  List<HomeToolEntry> _selectedHomeTools() {
+    final byId = {for (final tool in homeToolEntries) tool.id: tool};
+    return _homeToolIds
+        .map((id) => byId[id])
+        .whereType<HomeToolEntry>()
+        .toList();
+  }
+
+  void _openHomeTool(HomeToolEntry tool) {
+    switch (tool.id) {
+      case 'callsign_lookup':
+        Navigator.of(context).push(
+          MaterialPageRoute(builder: (_) => const CallsignLookupPage()),
+        );
+        return;
+      case 'qth_locator':
+        Navigator.of(context).push(
+          MaterialPageRoute(builder: (_) => const GridMapPage()),
+        );
+        return;
+      case 'frequency_table':
+        Navigator.of(context).push(
+          MaterialPageRoute(builder: (_) => const FrequencyTablePage()),
+        );
+        return;
+      case 'exam_practice':
+        Navigator.of(context).push(
+          MaterialPageRoute(builder: (_) => const PracticePage()),
+        );
+        return;
+      case 'qso_log':
+        Navigator.of(context).push(
+          MaterialPageRoute(builder: (_) => const RadioLogPage()),
+        );
+        return;
+      case 'study_calendar':
+        Navigator.of(context).push(
+          MaterialPageRoute(builder: (_) => const CalendarPage()),
+        );
+        return;
+      case 'satellite_tracker':
+        Navigator.of(context).push(
+          MaterialPageRoute(builder: (_) => const SatelliteTrackerPage()),
+        );
+        return;
+      case 'propagation_forecast':
+        Navigator.of(context).push(
+          MaterialPageRoute(builder: (_) => const PropagationForecastPage()),
+        );
+        return;
+      case 'antenna_calculator':
+        _openPlaceholder(
+          context,
+          '天线计算',
+          Icons.settings_input_antenna,
+          '计算天线长度、增益与常见换算。',
+        );
+        return;
+      case 'walkie_calculator':
+        _openPlaceholder(
+          context,
+          '对讲计算',
+          Icons.calculate,
+          '中继频差、亚音与常用参数计算。',
+        );
+        return;
+      case 'tone_decoder':
+        _openPlaceholder(
+          context,
+          '声码器',
+          Icons.graphic_eq,
+          'CTCSS / DCS / DTCS 查询功能正在接入。',
+        );
+        return;
+      default:
+        widget.onOpenTools?.call();
+        return;
+    }
+  }
+
+  bool _sameStringList(List<String> a, List<String> b) {
+    if (a.length != b.length) return false;
+    for (var index = 0; index < a.length; index++) {
+      if (a[index] != b[index]) return false;
+    }
+    return true;
+  }
 }
 
 class _HeroPanel extends StatelessWidget {
@@ -317,20 +385,12 @@ class _HeroPanel extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final colors = radioThemeColors(context);
-    final isDark = Theme.of(context).brightness == Brightness.dark;
-    final titleColor = isDark ? Colors.white : colors.text;
-    final heroGradient = isDark
-        ? const [
-            Color(0xff081a36),
-            Color(0xff04375a),
-            Color(0xff081426),
-          ]
-        : [
-            colors.accent.withValues(alpha: 0.22),
-            colors.page,
-            colors.panelAlt,
-          ];
+    final scheme = Theme.of(context).colorScheme;
+    final heroGradient = [
+      scheme.primaryContainer.withValues(alpha: 0.72),
+      scheme.surface,
+      scheme.surfaceContainer,
+    ];
 
     return Stack(
       fit: StackFit.expand,
@@ -349,14 +409,14 @@ class _HeroPanel extends StatelessWidget {
           top: 54,
           child: Icon(
             Icons.settings_input_antenna,
-            size: 210,
-            color: colors.accent.withValues(alpha: isDark ? 0.08 : 0.11),
+            size: 172,
+            color: scheme.primary.withValues(alpha: 0.10),
           ),
         ),
         Positioned(
-          left: 28,
-          right: 28,
-          bottom: 22,
+          left: 22,
+          right: 22,
+          bottom: 14,
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
@@ -369,8 +429,8 @@ class _HeroPanel extends StatelessWidget {
                     Text(
                       'Beacon',
                       style: TextStyle(
-                        color: titleColor,
-                        fontSize: 46,
+                        color: scheme.onSurface,
+                        fontSize: 34,
                         fontWeight: FontWeight.w900,
                         height: 1.05,
                       ),
@@ -382,22 +442,18 @@ class _HeroPanel extends StatelessWidget {
               Text(
                 'Beacon业余无线电工具箱',
                 style: TextStyle(
-                  color: isDark ? const Color(0xffb4c7e3) : colors.muted,
+                  color: scheme.onSurfaceVariant,
                   letterSpacing: 0,
                   fontWeight: FontWeight.w800,
                 ),
               ),
-              const SizedBox(height: 18),
+              const SizedBox(height: 12),
               Container(
-                padding: const EdgeInsets.all(16),
+                padding: const EdgeInsets.fromLTRB(14, 12, 14, 12),
                 decoration: BoxDecoration(
-                  color: isDark
-                      ? const Color(0xff07182c).withValues(alpha: 0.82)
-                      : colors.panel.withValues(alpha: 0.92),
-                  borderRadius: BorderRadius.circular(18),
-                  border: Border.all(
-                    color: isDark ? const Color(0xff214366) : colors.border,
-                  ),
+                  color: scheme.surfaceContainer.withValues(alpha: 0.92),
+                  borderRadius: BorderRadius.circular(16),
+                  border: Border.all(color: scheme.outlineVariant),
                 ),
                 child: Row(
                   children: [
@@ -410,8 +466,8 @@ class _HeroPanel extends StatelessWidget {
                               Text(
                                 radioProfile.callsign,
                                 style: TextStyle(
-                                  color: titleColor,
-                                  fontSize: 22,
+                                  color: scheme.onSurface,
+                                  fontSize: 21,
                                   fontWeight: FontWeight.w900,
                                 ),
                               ),
@@ -421,38 +477,38 @@ class _HeroPanel extends StatelessWidget {
                               const SizedBox(width: 4),
                               Text('在线',
                                   style: TextStyle(
-                                    color: isDark
-                                        ? const Color(0xff9fc2e8)
-                                        : colors.muted,
+                                    color: scheme.onSurfaceVariant,
                                   )),
                             ],
                           ),
-                          const SizedBox(height: 8),
+                          const SizedBox(height: 6),
                           Text(
                             '${radioProfile.qth} · ${radioProfile.grid}',
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
                             style: TextStyle(
-                              color: isDark
-                                  ? const Color(0xff9fb1ca)
-                                  : colors.muted,
+                              color: scheme.onSurfaceVariant,
                             ),
                           ),
                         ],
                       ),
                     ),
-                    const SizedBox(width: 16),
+                    const SizedBox(width: 12),
                     Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
-                        const Text(
+                        Text(
                           '业余电台执照',
-                          style: TextStyle(color: Color(0xff5fed70)),
+                          style: TextStyle(
+                            color: scheme.primary,
+                            fontWeight: FontWeight.w700,
+                          ),
                         ),
-                        const SizedBox(height: 2),
                         Text(
                           radioProfile.licenseClass,
-                          style: const TextStyle(
-                            color: Color(0xff6cff72),
-                            fontSize: 26,
+                          style: TextStyle(
+                            color: scheme.primary,
+                            fontSize: 24,
                             fontWeight: FontWeight.w900,
                           ),
                         ),
@@ -462,8 +518,8 @@ class _HeroPanel extends StatelessWidget {
                               ? radioProfile.licenseExpiry
                               : '${radioProfile.licenseExpiry} 到期',
                           style: TextStyle(
-                            color:
-                                isDark ? const Color(0xff8fa1bc) : colors.muted,
+                            color: scheme.onSurfaceVariant,
+                            fontSize: 12,
                           ),
                         ),
                       ],
@@ -475,6 +531,30 @@ class _HeroPanel extends StatelessWidget {
           ),
         ),
       ],
+    );
+  }
+}
+
+class _ConstrainedHomeContent extends StatelessWidget {
+  final Widget child;
+  final EdgeInsetsGeometry padding;
+
+  const _ConstrainedHomeContent({
+    required this.child,
+    required this.padding,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Align(
+      alignment: Alignment.topCenter,
+      child: ConstrainedBox(
+        constraints: const BoxConstraints(maxWidth: 820),
+        child: Padding(
+          padding: padding,
+          child: child,
+        ),
+      ),
     );
   }
 }
@@ -492,7 +572,7 @@ class _SectionHeader extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final colors = radioThemeColors(context);
+    final scheme = Theme.of(context).colorScheme;
 
     return Row(
       children: [
@@ -500,7 +580,7 @@ class _SectionHeader extends StatelessWidget {
           child: Text(
             title,
             style: TextStyle(
-              color: colors.text,
+              color: scheme.onSurface,
               fontSize: 20,
               fontWeight: FontWeight.w900,
             ),
@@ -530,42 +610,42 @@ class _ToolTile extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final colors = radioThemeColors(context);
+    final scheme = Theme.of(context).colorScheme;
 
     return Material(
-      color: colors.panelAlt,
-      borderRadius: BorderRadius.circular(16),
+      color: scheme.surfaceContainer,
+      borderRadius: BorderRadius.circular(14),
       clipBehavior: Clip.antiAlias,
       child: InkWell(
         onTap: onTap,
         child: Container(
-          padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 9),
+          padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 8),
           decoration: BoxDecoration(
-            border: Border.all(color: colors.border),
-            borderRadius: BorderRadius.circular(16),
+            border: Border.all(color: scheme.outlineVariant),
+            borderRadius: BorderRadius.circular(14),
           ),
           child: Column(
             mainAxisAlignment: MainAxisAlignment.center,
             children: [
               Container(
-                width: 40,
-                height: 40,
+                width: 36,
+                height: 36,
                 decoration: BoxDecoration(
                   color: color.withValues(alpha: 0.92),
-                  borderRadius: BorderRadius.circular(12),
+                  borderRadius: BorderRadius.circular(11),
                 ),
-                child: Icon(icon, color: Colors.white, size: 24),
+                child: Icon(icon, color: Colors.white, size: 22),
               ),
-              const SizedBox(height: 7),
+              const SizedBox(height: 6),
               Text(
                 title,
                 maxLines: 2,
                 textAlign: TextAlign.center,
                 overflow: TextOverflow.ellipsis,
                 style: TextStyle(
-                  color: colors.text,
+                  color: scheme.onSurface,
                   fontWeight: FontWeight.w800,
-                  fontSize: 12,
+                  fontSize: 11.5,
                   height: 1.2,
                 ),
               ),
@@ -578,32 +658,58 @@ class _ToolTile extends StatelessWidget {
 }
 
 class _InfoGrid extends StatelessWidget {
-  const _InfoGrid();
+  final String solarKp;
+  final String solarF107;
+  final String solarSource;
+  final VoidCallback onSolarTap;
+
+  const _InfoGrid({
+    required this.solarKp,
+    required this.solarF107,
+    required this.solarSource,
+    required this.onSolarTap,
+  });
 
   @override
   Widget build(BuildContext context) {
-    return const Row(
-      children: [
-        Expanded(
-          child: _MetricCard(
-            title: '实时信息',
-            value: '7.074.00',
-            unit: 'MHz',
-            chips: ['40m', 'FT8'],
-            icon: Icons.graphic_eq,
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final compact = constraints.maxWidth < 430;
+        return SizedBox(
+          height: compact ? 188 : 180,
+          child: Row(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              Expanded(
+                child: _MetricCard(
+                  title: '实时信息',
+                  value: '7.074.00',
+                  unit: 'MHz',
+                  chips: const ['40m', 'FT8'],
+                  icon: Icons.graphic_eq,
+                  note: '当前频率',
+                  compact: compact,
+                ),
+              ),
+              SizedBox(width: compact ? 10 : 12),
+              Expanded(
+                child: _MetricCard(
+                  title: '太阳活动',
+                  value: solarKp,
+                  unit: solarF107,
+                  chips: [solarSource],
+                  icon: Icons.wb_sunny,
+                  note: _solarKpStatus(solarKp),
+                  imageUrl:
+                      'https://sdo.gsfc.nasa.gov/assets/img/latest/latest_1024_0304.jpg',
+                  onTap: onSolarTap,
+                  compact: compact,
+                ),
+              ),
+            ],
           ),
-        ),
-        SizedBox(width: 12),
-        Expanded(
-          child: _MetricCard(
-            title: '太阳活动',
-            value: 'Kp 2',
-            unit: 'SFI 156',
-            chips: ['安静', 'HF 良好'],
-            icon: Icons.wb_sunny,
-          ),
-        ),
-      ],
+        );
+      },
     );
   }
 }
@@ -614,6 +720,10 @@ class _MetricCard extends StatelessWidget {
   final String unit;
   final List<String> chips;
   final IconData icon;
+  final VoidCallback? onTap;
+  final String? imageUrl;
+  final String? note;
+  final bool compact;
 
   const _MetricCard({
     required this.title,
@@ -621,75 +731,262 @@ class _MetricCard extends StatelessWidget {
     required this.unit,
     required this.chips,
     required this.icon,
+    this.onTap,
+    this.imageUrl,
+    this.note,
+    this.compact = false,
   });
 
   @override
   Widget build(BuildContext context) {
-    final colors = radioThemeColors(context);
+    final scheme = Theme.of(context).colorScheme;
+    final showVisual = imageUrl?.isNotEmpty == true;
+    final visual = showVisual
+        ? _MetricVisual(
+            icon: icon,
+            imageUrl: imageUrl,
+            size: compact ? 54 : 72,
+          )
+        : Icon(icon, color: scheme.primary, size: compact ? 24 : 28);
 
-    return Container(
-      height: 150,
-      padding: const EdgeInsets.all(14),
-      decoration: BoxDecoration(
-        color: colors.panelAlt,
-        borderRadius: BorderRadius.circular(18),
-        border: Border.all(color: colors.border),
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Row(
-            children: [
-              Expanded(
-                child: Text(
-                  title,
-                  style: TextStyle(
-                    color: colors.text,
-                    fontWeight: FontWeight.w900,
-                  ),
-                ),
-              ),
-              Icon(icon, color: const Color(0xff55a4ff)),
-            ],
-          ),
-          const Spacer(),
-          Text(
-            value,
-            style: TextStyle(
-              color: colors.text,
-              fontSize: 25,
-              fontWeight: FontWeight.w900,
+    return Material(
+      color: scheme.surfaceContainer,
+      borderRadius: BorderRadius.circular(16),
+      clipBehavior: Clip.antiAlias,
+      child: InkWell(
+        onTap: onTap,
+        child: SizedBox.expand(
+          child: Container(
+            padding: EdgeInsets.all(compact ? 12 : 13),
+            decoration: BoxDecoration(
+              borderRadius: BorderRadius.circular(16),
+              border: Border.all(color: scheme.outlineVariant),
             ),
-          ),
-          Text(unit, style: TextStyle(color: colors.muted)),
-          const SizedBox(height: 8),
-          Wrap(
-            spacing: 6,
-            children: chips
-                .map(
-                  (chip) => Container(
-                    padding:
-                        const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
-                    decoration: BoxDecoration(
-                      color: colors.accent.withValues(alpha: 0.14),
-                      borderRadius: BorderRadius.circular(999),
-                    ),
-                    child: Text(
-                      chip,
-                      style: TextStyle(
-                        color: colors.accent,
-                        fontSize: 11,
-                        fontWeight: FontWeight.w800,
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Expanded(
+                      child: Text(
+                        title,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: TextStyle(
+                          color: scheme.onSurface,
+                          fontWeight: FontWeight.w900,
+                        ),
                       ),
                     ),
+                    if (!showVisual) ...[
+                      const SizedBox(width: 6),
+                      visual,
+                    ],
+                  ],
+                ),
+                SizedBox(height: compact ? 8 : 10),
+                if (showVisual)
+                  Row(
+                    crossAxisAlignment: CrossAxisAlignment.center,
+                    children: [
+                      Expanded(
+                          child: _MetricTextBlock(
+                              value: value,
+                              unit: unit,
+                              note: note,
+                              compact: compact)),
+                      const SizedBox(width: 8),
+                      visual,
+                    ],
+                  )
+                else
+                  _MetricTextBlock(
+                    value: value,
+                    unit: unit,
+                    note: note,
+                    compact: compact,
                   ),
-                )
-                .toList(),
+                const Spacer(),
+                Wrap(
+                  spacing: 6,
+                  runSpacing: 4,
+                  children: chips
+                      .map(
+                        (chip) => Container(
+                          padding: const EdgeInsets.symmetric(
+                            horizontal: 8,
+                            vertical: 3,
+                          ),
+                          decoration: BoxDecoration(
+                            color: scheme.secondaryContainer
+                                .withValues(alpha: 0.7),
+                            borderRadius: BorderRadius.circular(999),
+                          ),
+                          child: Text(
+                            chip,
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: TextStyle(
+                              color: scheme.onSecondaryContainer,
+                              fontSize: 11,
+                              fontWeight: FontWeight.w800,
+                            ),
+                          ),
+                        ),
+                      )
+                      .toList(),
+                ),
+              ],
+            ),
           ),
-        ],
+        ),
       ),
     );
   }
+}
+
+class _MetricTextBlock extends StatelessWidget {
+  final String value;
+  final String unit;
+  final String? note;
+  final bool compact;
+
+  const _MetricTextBlock({
+    required this.value,
+    required this.unit,
+    this.note,
+    required this.compact,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    final unitParts = _splitMetricUnit(unit);
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        FittedBox(
+          fit: BoxFit.scaleDown,
+          alignment: Alignment.centerLeft,
+          child: Text(
+            value,
+            maxLines: 1,
+            softWrap: false,
+            style: TextStyle(
+              color: scheme.onSurface,
+              fontSize: compact ? 22 : 24,
+              fontWeight: FontWeight.w900,
+              height: 1.05,
+            ),
+          ),
+        ),
+        if (unitParts == null)
+          FittedBox(
+            fit: BoxFit.scaleDown,
+            alignment: Alignment.centerLeft,
+            child: Text(
+              unit,
+              maxLines: 1,
+              softWrap: false,
+              style: TextStyle(color: scheme.onSurfaceVariant),
+            ),
+          )
+        else ...[
+          Text(
+            unitParts.$1,
+            style: TextStyle(
+              color: scheme.onSurfaceVariant,
+              fontSize: 12,
+              fontWeight: FontWeight.w700,
+            ),
+          ),
+          Text(
+            unitParts.$2,
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            style: TextStyle(
+              color: scheme.onSurface,
+              fontSize: compact ? 13 : 14,
+              fontWeight: FontWeight.w800,
+            ),
+          ),
+        ],
+        if (note?.isNotEmpty == true) ...[
+          const SizedBox(height: 3),
+          Text(
+            note!,
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            style: TextStyle(
+              color: scheme.primary,
+              fontSize: 12,
+              fontWeight: FontWeight.w800,
+            ),
+          ),
+        ],
+      ],
+    );
+  }
+}
+
+(String, String)? _splitMetricUnit(String unit) {
+  final trimmed = unit.trim();
+  final match = RegExp(r'^(F10\.7)\s+(.+)$').firstMatch(trimmed);
+  if (match == null) return null;
+  return (match.group(1)!, match.group(2)!);
+}
+
+class _MetricVisual extends StatelessWidget {
+  final IconData icon;
+  final String? imageUrl;
+  final double size;
+
+  const _MetricVisual({
+    required this.icon,
+    required this.imageUrl,
+    required this.size,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    final url = imageUrl;
+    if (url == null || url.isEmpty) {
+      return Icon(icon, color: scheme.primary);
+    }
+
+    return ClipOval(
+      child: SizedBox(
+        width: size,
+        height: size,
+        child: Image.network(
+          url,
+          fit: BoxFit.cover,
+          errorBuilder: (_, __, ___) => Icon(icon, color: scheme.primary),
+          loadingBuilder: (context, child, progress) {
+            if (progress == null) return child;
+            return Container(
+              color: scheme.surfaceContainerHighest,
+              alignment: Alignment.center,
+              child: Icon(icon, color: scheme.primary, size: 28),
+            );
+          },
+        ),
+      ),
+    );
+  }
+}
+
+String _solarKpStatus(String kpLabel) {
+  final value = double.tryParse(
+    RegExp(r'(\d+(?:\.\d+)?)').firstMatch(kpLabel)?.group(1) ?? '',
+  );
+  if (value == null) return '等待太阳活动数据';
+  if (value < 4) return '地磁平静';
+  if (value < 5) return '轻微扰动';
+  if (value < 7) return '地磁扰动';
+  return '强扰动';
 }
 
 class _ExamPanel extends StatelessWidget {
@@ -721,75 +1018,84 @@ class _ExamPanel extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final colors = radioThemeColors(context);
+    final scheme = Theme.of(context).colorScheme;
 
     return Container(
-      padding: const EdgeInsets.all(18),
+      padding: const EdgeInsets.all(16),
       decoration: BoxDecoration(
-        color: colors.panelAlt,
+        color: scheme.surfaceContainer,
         borderRadius: BorderRadius.circular(18),
-        border: Border.all(color: colors.border),
+        border: Border.all(color: scheme.outlineVariant),
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Text(
-            'CRAC 考试训练',
-            style: TextStyle(
-              color: colors.text,
-              fontSize: 20,
-              fontWeight: FontWeight.w900,
-            ),
+          Row(
+            children: [
+              Expanded(
+                child: Text(
+                  'CRAC 考试训练',
+                  style: TextStyle(
+                    color: scheme.onSurface,
+                    fontSize: 19,
+                    fontWeight: FontWeight.w900,
+                  ),
+                ),
+              ),
+              _ExamLibraryChip(label: currentLibraryName),
+            ],
           ),
-          const SizedBox(height: 6),
-          Text(
-            currentLibraryName,
-            style: TextStyle(color: colors.muted, height: 1.4),
-          ),
-          const SizedBox(height: 14),
+          const SizedBox(height: 12),
           if (isLoading)
             const LinearProgressIndicator()
           else
             Column(
               children: [
-                Row(
-                  children: [
-                    Expanded(
-                      child: _ExamStatTile(
-                        label: '今日答题',
-                        value: '$todayAnswered',
-                        unit: '题',
+                Container(
+                  padding: const EdgeInsets.all(12),
+                  decoration: BoxDecoration(
+                    color:
+                        scheme.surfaceContainerHighest.withValues(alpha: 0.58),
+                    borderRadius: BorderRadius.circular(14),
+                    border: Border.all(color: scheme.outlineVariant),
+                  ),
+                  child: Column(
+                    children: [
+                      Row(
+                        children: [
+                          Expanded(
+                            child: _ExamInlineStat(
+                              label: '今日答题',
+                              value: '$todayAnswered 题',
+                            ),
+                          ),
+                          Expanded(
+                            child: _ExamInlineStat(
+                              label: '本周正确率',
+                              value: '${weekAccuracy.toStringAsFixed(1)}%',
+                            ),
+                          ),
+                        ],
                       ),
-                    ),
-                    const SizedBox(width: 10),
-                    Expanded(
-                      child: _ExamStatTile(
-                        label: '本周答题',
-                        value: '$weekAnswered',
-                        unit: '题',
+                      const SizedBox(height: 10),
+                      Row(
+                        children: [
+                          Expanded(
+                            child: _ExamInlineStat(
+                              label: '近五次合格',
+                              value: '$recentExamPassed/$recentExamTotal',
+                            ),
+                          ),
+                          Expanded(
+                            child: _ExamInlineStat(
+                              label: '本周答题',
+                              value: '$weekAnswered 题',
+                            ),
+                          ),
+                        ],
                       ),
-                    ),
-                  ],
-                ),
-                const SizedBox(height: 10),
-                Row(
-                  children: [
-                    Expanded(
-                      child: _ExamStatTile(
-                        label: '本周正确率',
-                        value: '${weekAccuracy.toStringAsFixed(1)}%',
-                        unit: '',
-                      ),
-                    ),
-                    const SizedBox(width: 10),
-                    Expanded(
-                      child: _ExamStatTile(
-                        label: '近五次合格',
-                        value: '$recentExamPassed/$recentExamTotal',
-                        unit: '',
-                      ),
-                    ),
-                  ],
+                    ],
+                  ),
                 ),
                 const SizedBox(height: 12),
                 ClipRRect(
@@ -800,16 +1106,34 @@ class _ExamPanel extends StatelessWidget {
                         : (completedQuestions / totalQuestions)
                             .clamp(0, 1)
                             .toDouble(),
-                    minHeight: 8,
+                    minHeight: 7,
+                    backgroundColor: scheme.surfaceContainerHighest,
                   ),
                 ),
                 const SizedBox(height: 6),
-                Align(
-                  alignment: Alignment.centerLeft,
-                  child: Text(
-                    '题库进度 $completedQuestions / $totalQuestions',
-                    style: TextStyle(color: colors.muted),
-                  ),
+                Row(
+                  children: [
+                    Expanded(
+                      child: Text(
+                        '题库进度 $completedQuestions / $totalQuestions',
+                        style: TextStyle(
+                          color: scheme.onSurfaceVariant,
+                          fontSize: 12,
+                          fontWeight: FontWeight.w700,
+                        ),
+                      ),
+                    ),
+                    Text(
+                      totalQuestions == 0
+                          ? '0%'
+                          : '${(completedQuestions / totalQuestions * 100).clamp(0, 100).toStringAsFixed(0)}%',
+                      style: TextStyle(
+                        color: scheme.primary,
+                        fontSize: 12,
+                        fontWeight: FontWeight.w900,
+                      ),
+                    ),
+                  ],
                 ),
               ],
             ),
@@ -824,10 +1148,10 @@ class _ExamPanel extends StatelessWidget {
                 ),
               ),
               const SizedBox(width: 10),
-              IconButton.filledTonal(
-                tooltip: '排行榜',
+              OutlinedButton.icon(
                 onPressed: onLeaderboard,
-                icon: const Icon(Icons.leaderboard),
+                icon: const Icon(Icons.query_stats),
+                label: const Text('查看统计'),
               ),
             ],
           ),
@@ -837,65 +1161,67 @@ class _ExamPanel extends StatelessWidget {
   }
 }
 
-class _ExamStatTile extends StatelessWidget {
+class _ExamLibraryChip extends StatelessWidget {
+  final String label;
+
+  const _ExamLibraryChip({required this.label});
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+      decoration: BoxDecoration(
+        color: scheme.primaryContainer,
+        borderRadius: BorderRadius.circular(999),
+      ),
+      child: Text(
+        label,
+        maxLines: 1,
+        overflow: TextOverflow.ellipsis,
+        style: TextStyle(
+          color: scheme.onPrimaryContainer,
+          fontSize: 12,
+          fontWeight: FontWeight.w900,
+        ),
+      ),
+    );
+  }
+}
+
+class _ExamInlineStat extends StatelessWidget {
   final String label;
   final String value;
-  final String unit;
 
-  const _ExamStatTile({
+  const _ExamInlineStat({
     required this.label,
     required this.value,
-    required this.unit,
   });
 
   @override
   Widget build(BuildContext context) {
-    final colors = radioThemeColors(context);
-
-    return Container(
-      padding: const EdgeInsets.all(12),
-      decoration: BoxDecoration(
-        color: colors.panel,
-        borderRadius: BorderRadius.circular(12),
-        border: Border.all(color: colors.border),
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Text(
-            label,
-            style: TextStyle(
-              color: colors.muted,
-              fontSize: 12,
-              fontWeight: FontWeight.w700,
-            ),
+    final scheme = Theme.of(context).colorScheme;
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(
+          label,
+          style: TextStyle(
+            color: scheme.onSurfaceVariant,
+            fontSize: 12,
+            fontWeight: FontWeight.w700,
           ),
-          const SizedBox(height: 6),
-          Row(
-            crossAxisAlignment: CrossAxisAlignment.end,
-            children: [
-              Text(
-                value,
-                style: TextStyle(
-                  color: colors.text,
-                  fontSize: 20,
-                  fontWeight: FontWeight.w900,
-                ),
-              ),
-              if (unit.isNotEmpty) ...[
-                const SizedBox(width: 4),
-                Padding(
-                  padding: const EdgeInsets.only(bottom: 2),
-                  child: Text(
-                    unit,
-                    style: TextStyle(color: colors.muted),
-                  ),
-                ),
-              ],
-            ],
+        ),
+        const SizedBox(height: 3),
+        Text(
+          value,
+          style: TextStyle(
+            color: scheme.onSurface,
+            fontSize: 18,
+            fontWeight: FontWeight.w900,
           ),
-        ],
-      ),
+        ),
+      ],
     );
   }
 }

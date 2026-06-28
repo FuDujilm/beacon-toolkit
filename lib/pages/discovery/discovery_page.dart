@@ -7,6 +7,9 @@ import '../../services/discovery_preferences_service.dart';
 import '../../services/discovery_service.dart';
 import '../../services/local_database_service.dart';
 import '../../services/satellite_service.dart';
+import '../practice/practice_page.dart';
+import '../radio/frequency_table_page.dart';
+import '../radio/radio_placeholder_page.dart';
 import 'discovery_detail_page.dart';
 import 'satellite_detail_page.dart';
 
@@ -83,6 +86,7 @@ class _DiscoveryPageState extends State<DiscoveryPage>
                 _FeedList(
                   title: area.isEmpty ? '为你推荐' : area,
                   variant: _FeedListVariant.dashboard,
+                  onOpenExamTab: () => _tabController.animateTo(1),
                   loader: (page) => _discoveryService.getFeed(
                     apiSources: _preferences.apiSources,
                     province: _preferences.province,
@@ -131,11 +135,13 @@ class _FeedList extends StatefulWidget {
   final String title;
   final _FeedListVariant variant;
   final Future<DiscoveryPageResult> Function(int page) loader;
+  final VoidCallback? onOpenExamTab;
 
   const _FeedList({
     required this.title,
     required this.loader,
     this.variant = _FeedListVariant.list,
+    this.onOpenExamTab,
   });
 
   @override
@@ -248,6 +254,7 @@ class _FeedListState extends State<_FeedList> {
           items: _items,
           isLoadingMore: _hasMore || _isLoading,
           loadMore: _load,
+          onOpenExamTab: widget.onOpenExamTab,
         ),
       );
     }
@@ -314,25 +321,31 @@ class _ExamBoard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final visibleItems = items.where(_isVisibleExamItem).toList();
+    final sortedItems = [...visibleItems]
+      ..sort((a, b) => _examDate(a).compareTo(_examDate(b)));
+
     return ListView(
       controller: controller,
       padding: const EdgeInsets.fromLTRB(16, 12, 16, 28),
       children: [
-        const _ExamSummaryCard(),
+        _ExamSummaryCard(items: sortedItems),
         const SizedBox(height: 20),
         _Panel(
           title: '近期考试',
           icon: Icons.history_edu,
           iconColor: const Color(0xFF8B5CF6),
-          child: Column(
-            children: items
-                .take(8)
-                .map((item) => Padding(
-                      padding: const EdgeInsets.only(bottom: 10),
-                      child: _ExamCompactCard(item: item),
-                    ))
-                .toList(),
-          ),
+          child: sortedItems.isEmpty
+              ? const _EmptyExamNotice()
+              : Column(
+                  children: sortedItems
+                      .take(8)
+                      .map((item) => Padding(
+                            padding: const EdgeInsets.only(bottom: 10),
+                            child: _ExamCompactCard(item: item),
+                          ))
+                      .toList(),
+                ),
         ),
         if (isLoadingMore) ...[
           const SizedBox(height: 14),
@@ -350,7 +363,241 @@ class _ExamBoard extends StatelessWidget {
 }
 
 class _ExamSummaryCard extends StatelessWidget {
-  const _ExamSummaryCard();
+  final List<DiscoveryFeedItem> items;
+
+  const _ExamSummaryCard({required this.items});
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    final now = DateTime.now();
+    final monthCount = items.where((item) {
+      final date = _examDate(item);
+      return date.year == now.year && date.month == now.month;
+    }).length;
+    final openCount = items.length;
+    final upcomingCount =
+        items.where((item) => !_examDate(item).isBefore(now)).length;
+
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final compact = constraints.maxWidth < 430;
+        return Container(
+          padding: EdgeInsets.all(compact ? 16 : 18),
+          decoration: BoxDecoration(
+            borderRadius: BorderRadius.circular(8),
+            border: Border.all(color: scheme.primary.withValues(alpha: 0.35)),
+            gradient: const LinearGradient(
+              begin: Alignment.topLeft,
+              end: Alignment.bottomRight,
+              colors: [Color(0xFF2B1E6E), Color(0xFF071526)],
+            ),
+          ),
+          child: Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      '业余无线电操作技术能力考试',
+                      style: Theme.of(context).textTheme.titleLarge?.copyWith(
+                            color: Colors.white,
+                            fontWeight: FontWeight.w800,
+                          ),
+                    ),
+                    const SizedBox(height: 8),
+                    const Text(
+                      'AB类 · 各地考试信息与公告',
+                      style: TextStyle(color: Colors.white70),
+                    ),
+                    const SizedBox(height: 18),
+                    _ExamStatsRow(
+                      stats: [
+                        (monthCount.toString(), '本月考试'),
+                        (openCount.toString(), '可查看'),
+                        (upcomingCount.toString(), '即将开始'),
+                      ],
+                    ),
+                    const SizedBox(height: 18),
+                    OutlinedButton.icon(
+                      onPressed: () => _openExamCalendar(context),
+                      icon: const Icon(Icons.calendar_month),
+                      label: const Text('全部考试日历'),
+                      style: OutlinedButton.styleFrom(
+                        foregroundColor: Colors.white,
+                        side: BorderSide(
+                          color: Colors.white.withValues(alpha: 0.35),
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              if (!compact) ...[
+                const SizedBox(width: 16),
+                Icon(
+                  Icons.assignment_turned_in,
+                  color: Colors.white.withValues(alpha: 0.55),
+                  size: 94,
+                ),
+              ],
+            ],
+          ),
+        );
+      },
+    );
+  }
+
+  void _openExamCalendar(BuildContext context) {
+    if (items.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('暂无可展示的考试日历数据')),
+      );
+      return;
+    }
+    Navigator.of(context).push(
+      MaterialPageRoute(builder: (_) => _ExamCalendarPage(items: items)),
+    );
+  }
+}
+
+class _ExamStatsRow extends StatelessWidget {
+  final List<(String, String)> stats;
+
+  const _ExamStatsRow({required this.stats});
+
+  @override
+  Widget build(BuildContext context) {
+    return Row(
+      children: [
+        for (var index = 0; index < stats.length; index++) ...[
+          Expanded(
+            child: _ExamStat(value: stats[index].$1, label: stats[index].$2),
+          ),
+          if (index != stats.length - 1) const _ExamDivider(),
+        ],
+      ],
+    );
+  }
+}
+
+class _ExamCalendarPage extends StatefulWidget {
+  final List<DiscoveryFeedItem> items;
+
+  const _ExamCalendarPage({required this.items});
+
+  @override
+  State<_ExamCalendarPage> createState() => _ExamCalendarPageState();
+}
+
+class _ExamCalendarPageState extends State<_ExamCalendarPage> {
+  late DateTime _visibleMonth;
+  late DateTime _selectedDay;
+
+  @override
+  void initState() {
+    super.initState();
+    final now = DateTime.now();
+    _visibleMonth = DateTime(now.year, now.month);
+    _selectedDay = DateTime(now.year, now.month, now.day);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    final monthItems = _sortedItems().where((item) {
+      final date = _examDate(item);
+      return date.year == _visibleMonth.year &&
+          date.month == _visibleMonth.month;
+    }).toList();
+    final selectedItems = monthItems
+        .where((item) => _isSameDay(_examDate(item), _selectedDay))
+        .toList();
+
+    return Scaffold(
+      appBar: AppBar(title: const Text('考试日历')),
+      body: ListView(
+        padding: const EdgeInsets.fromLTRB(16, 12, 16, 28),
+        children: [
+          _CalendarHeader(
+            month: _visibleMonth,
+            count: monthItems.length,
+            onPrevious: () => _changeMonth(-1),
+            onNext: () => _changeMonth(1),
+          ),
+          const SizedBox(height: 12),
+          Container(
+            padding: const EdgeInsets.fromLTRB(10, 12, 10, 10),
+            decoration: BoxDecoration(
+              color: scheme.surfaceContainer,
+              borderRadius: BorderRadius.circular(14),
+              border: Border.all(color: scheme.outlineVariant),
+            ),
+            child: Column(
+              children: [
+                const _WeekdayHeader(),
+                const SizedBox(height: 8),
+                _MonthGrid(
+                  month: _visibleMonth,
+                  items: monthItems,
+                  selectedDay: _selectedDay,
+                  onSelected: (day) {
+                    setState(() {
+                      _selectedDay = day;
+                    });
+                  },
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(height: 18),
+          _Panel(
+            title: _formatChineseDay(_selectedDay),
+            icon: Icons.event_note,
+            iconColor: const Color(0xFF8B5CF6),
+            child: selectedItems.isEmpty
+                ? Padding(
+                    padding: const EdgeInsets.symmetric(vertical: 18),
+                    child: Center(
+                      child: Text(
+                        '当天暂无考试信息',
+                        style: TextStyle(color: scheme.onSurfaceVariant),
+                      ),
+                    ),
+                  )
+                : Column(
+                    children: selectedItems
+                        .map(
+                          (item) => Padding(
+                            padding: const EdgeInsets.only(bottom: 10),
+                            child: _ExamCompactCard(item: item),
+                          ),
+                        )
+                        .toList(),
+                  ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  List<DiscoveryFeedItem> _sortedItems() {
+    return [...widget.items]
+      ..sort((a, b) => _examDate(a).compareTo(_examDate(b)));
+  }
+
+  void _changeMonth(int delta) {
+    setState(() {
+      _visibleMonth = DateTime(_visibleMonth.year, _visibleMonth.month + delta);
+      _selectedDay = DateTime(_visibleMonth.year, _visibleMonth.month, 1);
+    });
+  }
+}
+
+class _EmptyExamNotice extends StatelessWidget {
+  const _EmptyExamNotice();
 
   @override
   Widget build(BuildContext context) {
@@ -358,57 +605,242 @@ class _ExamSummaryCard extends StatelessWidget {
     return Container(
       padding: const EdgeInsets.all(18),
       decoration: BoxDecoration(
+        color: scheme.surfaceContainerHighest.withValues(alpha: 0.45),
         borderRadius: BorderRadius.circular(8),
-        border: Border.all(color: scheme.primary.withValues(alpha: 0.35)),
-        gradient: const LinearGradient(
-          begin: Alignment.topLeft,
-          end: Alignment.bottomRight,
-          colors: [Color(0xFF2B1E6E), Color(0xFF071526)],
-        ),
+        border: Border.all(color: scheme.outlineVariant),
       ),
       child: Row(
         children: [
+          Icon(Icons.event_busy, color: scheme.onSurfaceVariant),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Text(
+              '暂无未过期考试信息',
+              style: TextStyle(
+                color: scheme.onSurfaceVariant,
+                fontWeight: FontWeight.w700,
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _CalendarHeader extends StatelessWidget {
+  final DateTime month;
+  final int count;
+  final VoidCallback onPrevious;
+  final VoidCallback onNext;
+
+  const _CalendarHeader({
+    required this.month,
+    required this.count,
+    required this.onPrevious,
+    required this.onNext,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    return Container(
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        color: scheme.surfaceContainer,
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(color: scheme.outlineVariant),
+      ),
+      child: Row(
+        children: [
+          IconButton.filledTonal(
+            onPressed: onPrevious,
+            icon: const Icon(Icons.chevron_left),
+          ),
+          const SizedBox(width: 8),
           Expanded(
             child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
+              crossAxisAlignment: CrossAxisAlignment.center,
               children: [
                 Text(
-                  '业余无线电操作技术能力考试',
+                  '${month.year}年${month.month}月',
                   style: Theme.of(context).textTheme.titleLarge?.copyWith(
-                        color: Colors.white,
-                        fontWeight: FontWeight.w800,
+                        fontWeight: FontWeight.w900,
                       ),
                 ),
-                const SizedBox(height: 8),
-                const Text('AB类 · 各地考试信息与公告',
-                    style: TextStyle(color: Colors.white70)),
-                const SizedBox(height: 18),
-                const Row(
-                  children: [
-                    _ExamStat(value: '12', label: '本月考试'),
-                    _ExamDivider(),
-                    _ExamStat(value: '5', label: '报名中'),
-                    _ExamDivider(),
-                    _ExamStat(value: '8', label: '即将开始'),
-                  ],
-                ),
-                const SizedBox(height: 18),
-                OutlinedButton.icon(
-                  onPressed: () {},
-                  icon: const Icon(Icons.calendar_month),
-                  label: const Text('全部考试日历'),
-                  style: OutlinedButton.styleFrom(
-                    foregroundColor: Colors.white,
-                    side:
-                        BorderSide(color: Colors.white.withValues(alpha: 0.35)),
+                const SizedBox(height: 2),
+                Text(
+                  '$count 场考试信息',
+                  style: TextStyle(
+                    color: scheme.onSurfaceVariant,
+                    fontWeight: FontWeight.w700,
                   ),
                 ),
               ],
             ),
           ),
-          Icon(Icons.assignment_turned_in,
-              color: Colors.white.withValues(alpha: 0.55), size: 94),
+          const SizedBox(width: 8),
+          IconButton.filledTonal(
+            onPressed: onNext,
+            icon: const Icon(Icons.chevron_right),
+          ),
         ],
+      ),
+    );
+  }
+}
+
+class _WeekdayHeader extends StatelessWidget {
+  const _WeekdayHeader();
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    const weekdays = ['一', '二', '三', '四', '五', '六', '日'];
+    return Row(
+      children: weekdays
+          .map(
+            (day) => Expanded(
+              child: Center(
+                child: Text(
+                  day,
+                  style: TextStyle(
+                    color: scheme.onSurfaceVariant,
+                    fontSize: 12,
+                    fontWeight: FontWeight.w800,
+                  ),
+                ),
+              ),
+            ),
+          )
+          .toList(),
+    );
+  }
+}
+
+class _MonthGrid extends StatelessWidget {
+  final DateTime month;
+  final List<DiscoveryFeedItem> items;
+  final DateTime? selectedDay;
+  final ValueChanged<DateTime> onSelected;
+
+  const _MonthGrid({
+    required this.month,
+    required this.items,
+    required this.selectedDay,
+    required this.onSelected,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final firstDay = DateTime(month.year, month.month);
+    final daysInMonth = DateTime(month.year, month.month + 1, 0).day;
+    final leading = firstDay.weekday - 1;
+    final cellCount = ((leading + daysInMonth + 6) ~/ 7) * 7;
+
+    return GridView.builder(
+      shrinkWrap: true,
+      physics: const NeverScrollableScrollPhysics(),
+      gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
+        crossAxisCount: 7,
+        mainAxisSpacing: 6,
+        crossAxisSpacing: 6,
+        mainAxisExtent: 46,
+      ),
+      itemCount: cellCount,
+      itemBuilder: (context, index) {
+        final dayNumber = index - leading + 1;
+        if (dayNumber < 1 || dayNumber > daysInMonth) {
+          return const SizedBox.shrink();
+        }
+        final day = DateTime(month.year, month.month, dayNumber);
+        final dayItems =
+            items.where((item) => _isSameDay(_examDate(item), day)).toList();
+        return _CalendarDayCell(
+          day: day,
+          count: dayItems.length,
+          selected: selectedDay != null && _isSameDay(selectedDay!, day),
+          onTap: () => onSelected(day),
+        );
+      },
+    );
+  }
+}
+
+class _CalendarDayCell extends StatelessWidget {
+  final DateTime day;
+  final int count;
+  final bool selected;
+  final VoidCallback onTap;
+
+  const _CalendarDayCell({
+    required this.day,
+    required this.count,
+    required this.selected,
+    required this.onTap,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    final today = _isSameDay(day, DateTime.now());
+    final hasExam = count > 0;
+    return Material(
+      color: selected
+          ? scheme.primary
+          : today
+              ? scheme.primaryContainer
+              : hasExam
+                  ? scheme.primaryContainer.withValues(alpha: 0.58)
+                  : Colors.transparent,
+      borderRadius: BorderRadius.circular(10),
+      clipBehavior: Clip.antiAlias,
+      child: InkWell(
+        onTap: onTap,
+        child: DecoratedBox(
+          decoration: BoxDecoration(
+            borderRadius: BorderRadius.circular(10),
+            border: Border.all(
+              color: selected
+                  ? scheme.primary
+                  : today
+                      ? scheme.primary.withValues(alpha: 0.3)
+                      : hasExam
+                          ? scheme.primary.withValues(alpha: 0.42)
+                          : scheme.outlineVariant.withValues(alpha: 0.55),
+            ),
+          ),
+          child: Column(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              Text(
+                '${day.day}',
+                style: TextStyle(
+                  color: selected
+                      ? scheme.onPrimary
+                      : today
+                          ? scheme.onPrimaryContainer
+                          : hasExam
+                              ? scheme.onPrimaryContainer
+                              : scheme.onSurface,
+                  fontWeight: FontWeight.w900,
+                ),
+              ),
+              const SizedBox(height: 3),
+              AnimatedContainer(
+                duration: const Duration(milliseconds: 150),
+                width: hasExam ? 16 : 4,
+                height: 4,
+                decoration: BoxDecoration(
+                  color: hasExam
+                      ? (selected ? scheme.onPrimary : scheme.primary)
+                      : Colors.transparent,
+                  borderRadius: BorderRadius.circular(999),
+                ),
+              ),
+            ],
+          ),
+        ),
       ),
     );
   }
@@ -664,6 +1096,7 @@ class _DiscoveryDashboard extends StatelessWidget {
   final List<DiscoveryFeedItem> items;
   final bool isLoadingMore;
   final VoidCallback loadMore;
+  final VoidCallback? onOpenExamTab;
 
   const _DiscoveryDashboard({
     required this.controller,
@@ -671,6 +1104,7 @@ class _DiscoveryDashboard extends StatelessWidget {
     required this.items,
     required this.isLoadingMore,
     required this.loadMore,
+    this.onOpenExamTab,
   });
 
   @override
@@ -715,7 +1149,7 @@ class _DiscoveryDashboard extends StatelessWidget {
           },
         ),
         const SizedBox(height: 22),
-        const _QuickLinksSection(),
+        _QuickLinksSection(onOpenExamTab: onOpenExamTab),
         if (isLoadingMore) ...[
           const SizedBox(height: 18),
           Center(
@@ -1071,15 +1505,44 @@ class _NewsCompactTile extends StatelessWidget {
 }
 
 class _QuickLinksSection extends StatelessWidget {
-  const _QuickLinksSection();
+  final VoidCallback? onOpenExamTab;
+
+  const _QuickLinksSection({this.onOpenExamTab});
 
   @override
   Widget build(BuildContext context) {
-    const links = [
-      (Icons.article_outlined, '考试指南', '报考流程与说明'),
-      (Icons.edit_note, '模拟练习', '在线题库练习'),
-      (Icons.graphic_eq, '频率数据库', '业余频段速查'),
-      (Icons.radio, '电台设备库', '设备资料查询'),
+    final links = [
+      (Icons.article_outlined, '考试指南', '报考流程与说明', onOpenExamTab ?? () {}),
+      (
+        Icons.edit_note,
+        '模拟练习',
+        '在线题库练习',
+        () => Navigator.of(context).push(
+              MaterialPageRoute(builder: (_) => const PracticePage()),
+            ),
+      ),
+      (
+        Icons.graphic_eq,
+        '频率数据库',
+        '业余频段速查',
+        () => Navigator.of(context).push(
+              MaterialPageRoute(builder: (_) => const FrequencyTablePage()),
+            ),
+      ),
+      (
+        Icons.radio,
+        '电台设备库',
+        '设备资料查询',
+        () => Navigator.of(context).push(
+              MaterialPageRoute(
+                builder: (_) => const RadioPlaceholderPage(
+                  title: '电台设备库',
+                  icon: Icons.radio,
+                  subtitle: '电台设备资料查询功能正在接入，当前版本先提供统一入口。',
+                ),
+              ),
+            ),
+      ),
     ];
     return _Panel(
       title: '精选推荐',
@@ -1100,6 +1563,7 @@ class _QuickLinksSection extends StatelessWidget {
                       icon: link.$1,
                       title: link.$2,
                       subtitle: link.$3,
+                      onTap: link.$4,
                     ))
                 .toList(),
           );
@@ -1113,51 +1577,64 @@ class _QuickLinkCard extends StatelessWidget {
   final IconData icon;
   final String title;
   final String subtitle;
+  final VoidCallback onTap;
 
   const _QuickLinkCard({
     required this.icon,
     required this.title,
     required this.subtitle,
+    required this.onTap,
   });
 
   @override
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
-    return Container(
-      padding: const EdgeInsets.all(12),
-      decoration: BoxDecoration(
-        borderRadius: BorderRadius.circular(8),
-        border:
-            Border.all(color: scheme.outlineVariant.withValues(alpha: 0.65)),
-        gradient: LinearGradient(
-          begin: Alignment.topLeft,
-          end: Alignment.bottomRight,
-          colors: [
-            scheme.primaryContainer.withValues(alpha: 0.34),
-            scheme.surfaceContainerHighest.withValues(alpha: 0.54),
-          ],
-        ),
-      ),
-      child: Row(
-        children: [
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              mainAxisAlignment: MainAxisAlignment.center,
-              children: [
-                Text(title,
-                    style: const TextStyle(fontWeight: FontWeight.w800)),
-                const SizedBox(height: 4),
-                Text(
-                  subtitle,
-                  overflow: TextOverflow.ellipsis,
-                  style: TextStyle(color: scheme.outline, fontSize: 12),
-                ),
+    return Material(
+      color: Colors.transparent,
+      borderRadius: BorderRadius.circular(8),
+      clipBehavior: Clip.antiAlias,
+      child: InkWell(
+        onTap: onTap,
+        child: Container(
+          padding: const EdgeInsets.all(12),
+          decoration: BoxDecoration(
+            borderRadius: BorderRadius.circular(8),
+            border: Border.all(
+              color: scheme.outlineVariant.withValues(alpha: 0.65),
+            ),
+            gradient: LinearGradient(
+              begin: Alignment.topLeft,
+              end: Alignment.bottomRight,
+              colors: [
+                scheme.primaryContainer.withValues(alpha: 0.34),
+                scheme.surfaceContainerHighest.withValues(alpha: 0.54),
               ],
             ),
           ),
-          Icon(icon, color: scheme.primary, size: 30),
-        ],
+          child: Row(
+            children: [
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [
+                    Text(
+                      title,
+                      style: const TextStyle(fontWeight: FontWeight.w800),
+                    ),
+                    const SizedBox(height: 4),
+                    Text(
+                      subtitle,
+                      overflow: TextOverflow.ellipsis,
+                      style: TextStyle(color: scheme.outline, fontSize: 12),
+                    ),
+                  ],
+                ),
+              ),
+              Icon(icon, color: scheme.primary, size: 30),
+            ],
+          ),
+        ),
       ),
     );
   }
@@ -1305,6 +1782,30 @@ String _typeLabel(String type) {
 String _formatDate(DateTime? date) {
   if (date == null) return '';
   return DateFormat('MM-dd HH:mm').format(date.toLocal());
+}
+
+DateTime _examDate(DiscoveryFeedItem item) {
+  return (item.examTime ?? item.publishedAt ?? item.fetchedAt ?? DateTime.now())
+      .toLocal();
+}
+
+bool _isVisibleExamItem(DiscoveryFeedItem item) {
+  if (item.isExpired) return false;
+  final examTime = item.examTime;
+  if (examTime == null) return true;
+  final date = examTime.toLocal();
+  final today = DateTime.now();
+  final todayStart = DateTime(today.year, today.month, today.day);
+  return !date.isBefore(todayStart);
+}
+
+bool _isSameDay(DateTime a, DateTime b) {
+  return a.year == b.year && a.month == b.month && a.day == b.day;
+}
+
+String _formatChineseDay(DateTime date) {
+  const weekdays = ['星期一', '星期二', '星期三', '星期四', '星期五', '星期六', '星期日'];
+  return '${date.month}月${date.day}日 ${weekdays[date.weekday - 1]}';
 }
 
 class _FeedCard extends StatelessWidget {

@@ -15,12 +15,17 @@ class _DeveloperPageState extends State<DeveloperPage> {
   final _examApiUrlController = TextEditingController();
   final _beaconApiUrlController = TextEditingController();
   final _tiandituTokenController = TextEditingController();
+  final _llmBaseUrlController = TextEditingController();
+  final _llmApiKeyController = TextEditingController();
+  final _llmModelController = TextEditingController();
   final _endpointSettingsService = const AppEndpointSettingsService();
 
   bool _isLoading = true;
   bool _isSavingExamApi = false;
   bool _isSavingBeaconApi = false;
   bool _isSavingTianditu = false;
+  bool _isSavingLlm = false;
+  bool _llmEnabled = false;
   bool _isTestingExamApi = false;
   bool _isTestingBeaconApi = false;
   Map<String, dynamic>? _examApiTestResult;
@@ -37,6 +42,9 @@ class _DeveloperPageState extends State<DeveloperPage> {
     _examApiUrlController.dispose();
     _beaconApiUrlController.dispose();
     _tiandituTokenController.dispose();
+    _llmBaseUrlController.dispose();
+    _llmApiKeyController.dispose();
+    _llmModelController.dispose();
     super.dispose();
   }
 
@@ -46,12 +54,18 @@ class _DeveloperPageState extends State<DeveloperPage> {
       authService.getApiUrl(),
       _endpointSettingsService.getBeaconApiBaseUrl(),
       _endpointSettingsService.getTiandituToken(),
+      _endpointSettingsService.getLlmSettings(),
     ]);
     if (!mounted) return;
+    final llmSettings = results[3] as LlmSettings;
     setState(() {
-      _examApiUrlController.text = results[0];
-      _beaconApiUrlController.text = results[1];
-      _tiandituTokenController.text = results[2];
+      _examApiUrlController.text = results[0] as String;
+      _beaconApiUrlController.text = results[1] as String;
+      _tiandituTokenController.text = results[2] as String;
+      _llmEnabled = llmSettings.enabled;
+      _llmBaseUrlController.text = llmSettings.baseUrl;
+      _llmApiKeyController.text = llmSettings.apiKey;
+      _llmModelController.text = llmSettings.model;
       _isLoading = false;
     });
   }
@@ -152,6 +166,36 @@ class _DeveloperPageState extends State<DeveloperPage> {
       _showSnackBar('保存失败: $e', error: true);
     } finally {
       if (mounted) setState(() => _isSavingTianditu = false);
+    }
+  }
+
+  Future<void> _saveLlmSettings() async {
+    setState(() => _isSavingLlm = true);
+    try {
+      await _endpointSettingsService.updateLlmSettings(
+        LlmSettings(
+          enabled: _llmEnabled,
+          baseUrl: _llmBaseUrlController.text,
+          apiKey: _llmApiKeyController.text,
+          model: _llmModelController.text.trim().isEmpty
+              ? LlmSettings.defaultModel
+              : _llmModelController.text,
+        ),
+      );
+      final settings = await _endpointSettingsService.getLlmSettings();
+      if (!mounted) return;
+      setState(() {
+        _llmEnabled = settings.enabled;
+        _llmBaseUrlController.text = settings.baseUrl;
+        _llmApiKeyController.text = settings.apiKey;
+        _llmModelController.text = settings.model;
+      });
+      _showSnackBar('LLM 配置已保存');
+    } catch (e) {
+      if (!mounted) return;
+      _showSnackBar('保存失败: $e', error: true);
+    } finally {
+      if (mounted) setState(() => _isSavingLlm = false);
     }
   }
 
@@ -272,6 +316,74 @@ class _DeveloperPageState extends State<DeveloperPage> {
                               )
                             : const Icon(Icons.save),
                         label: Text(_isSavingTianditu ? '保存中...' : '保存天地图'),
+                      ),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 16),
+                _SettingsSection(
+                  title: 'LLM',
+                  icon: Icons.auto_awesome,
+                  description: '通用大模型接口，默认兼容 OpenAI /v1/chat/completions。',
+                  children: [
+                    SwitchListTile(
+                      contentPadding: EdgeInsets.zero,
+                      title: const Text('启用 LLM 功能'),
+                      subtitle: const Text('传播预测等页面会复用此配置。'),
+                      value: _llmEnabled,
+                      onChanged: (value) => setState(() {
+                        _llmEnabled = value;
+                      }),
+                    ),
+                    const SizedBox(height: 8),
+                    TextField(
+                      controller: _llmBaseUrlController,
+                      decoration: const InputDecoration(
+                        labelText: 'OpenAI-compatible 接口地址',
+                        hintText: 'https://api.openai.com/v1/chat/completions',
+                        border: OutlineInputBorder(),
+                      ),
+                      keyboardType: TextInputType.url,
+                    ),
+                    const SizedBox(height: 10),
+                    TextField(
+                      controller: _llmApiKeyController,
+                      decoration: const InputDecoration(
+                        labelText: 'API Key',
+                        border: OutlineInputBorder(),
+                      ),
+                      obscureText: true,
+                      enableSuggestions: false,
+                      autocorrect: false,
+                    ),
+                    const SizedBox(height: 10),
+                    TextField(
+                      controller: _llmModelController,
+                      decoration: const InputDecoration(
+                        labelText: '模型',
+                        hintText: LlmSettings.defaultModel,
+                        border: OutlineInputBorder(),
+                      ),
+                    ),
+                    const SizedBox(height: 8),
+                    const _HelpText(
+                      'API Key 仅保存在本机。地址可填写服务根地址或 /v1，保存时会自动补全 chat/completions。',
+                    ),
+                    const SizedBox(height: 12),
+                    SizedBox(
+                      width: double.infinity,
+                      child: FilledButton.icon(
+                        onPressed: _isSavingLlm ? null : _saveLlmSettings,
+                        icon: _isSavingLlm
+                            ? const SizedBox(
+                                width: 18,
+                                height: 18,
+                                child: CircularProgressIndicator(
+                                  strokeWidth: 2,
+                                ),
+                              )
+                            : const Icon(Icons.save),
+                        label: Text(_isSavingLlm ? '保存中...' : '保存 LLM'),
                       ),
                     ),
                   ],

@@ -33,6 +33,7 @@ class AuthService {
   // OIDC standard endpoints
   static String get _authorizeEndpoint => '$_oauthBaseUrl/oauth2/authorize';
   static String get _tokenEndpoint => '$_oauthBaseUrl/oauth2/token';
+  static String get _userinfoEndpoint => '$_oauthBaseUrl/oauth2/userinfo';
 
   /// Desktop (Linux/Windows/macOS) uses an http://localhost callback with
   /// the system browser; mobile uses a custom URL scheme deep link.
@@ -177,12 +178,29 @@ class AuthService {
             key: AppConstants.refreshTokenKey, value: refreshToken);
       }
 
-      // 8. Return user info
-      return {
+      final userInfo = {
         'id': claims['sub'],
         'email': claims['email'],
-        'name': claims['name'],
+        'name': claims['name'] ?? claims['display_name'],
+        'image': claims['picture'] ?? claims['avatar_url'],
       };
+      final remoteUserInfo = await _fetchUserInfo(accessToken);
+      final mergedUserInfo = {
+        ...userInfo,
+        ...remoteUserInfo,
+        'id': remoteUserInfo['id'] ?? remoteUserInfo['sub'] ?? userInfo['id'],
+        'name': remoteUserInfo['name'] ??
+            remoteUserInfo['display_name'] ??
+            userInfo['name'],
+        'image': remoteUserInfo['image'] ??
+            remoteUserInfo['picture'] ??
+            remoteUserInfo['avatar_url'] ??
+            userInfo['image'],
+      };
+      await _cacheUserInfo(mergedUserInfo);
+
+      // 8. Return user info
+      return mergedUserInfo;
     } catch (e) {
       debugPrint('OAuth login error: $e');
       rethrow;
@@ -192,6 +210,7 @@ class AuthService {
   Future<void> logout() async {
     await _storage.delete(key: AppConstants.tokenKey);
     await _storage.delete(key: AppConstants.refreshTokenKey);
+    await _storage.delete(key: AppConstants.cachedUserInfoKey);
   }
 
   Future<bool> isLoggedIn() async {
@@ -208,6 +227,105 @@ class AuthService {
       return false;
     }
     return token != null;
+  }
+
+  Future<Map<String, dynamic>?> getCurrentUserInfo({
+    bool refresh = true,
+  }) async {
+    final cached = await _readCachedUserInfo();
+    if (!refresh) return cached;
+
+    final token = await _readToken();
+    if (token == null) return cached;
+    final tokenClaims = _decodeJwtPayloadOrEmpty(token);
+    final remote = await _fetchUserInfo(token);
+    final merged = {
+      ...?cached,
+      ...tokenClaims,
+      ...remote,
+      'id':
+          remote['id'] ?? remote['sub'] ?? tokenClaims['sub'] ?? cached?['id'],
+      'email': remote['email'] ?? tokenClaims['email'] ?? cached?['email'],
+      'name': remote['name'] ??
+          remote['display_name'] ??
+          tokenClaims['name'] ??
+          tokenClaims['display_name'] ??
+          cached?['name'],
+      'image': remote['image'] ??
+          remote['picture'] ??
+          remote['avatar_url'] ??
+          tokenClaims['picture'] ??
+          tokenClaims['avatar_url'] ??
+          cached?['image'],
+    };
+    if (merged.values.every((value) => value == null || value == '')) {
+      return cached;
+    }
+    await _cacheUserInfo(merged);
+    return merged;
+  }
+
+  Future<String?> _readToken() async {
+    try {
+      return await _storage.read(key: AppConstants.tokenKey);
+    } catch (e) {
+      debugPrint('Failed to read auth token: $e');
+      return null;
+    }
+  }
+
+  Future<Map<String, dynamic>> _fetchUserInfo(String accessToken) async {
+    try {
+      final endpoints = [
+        _userinfoEndpoint,
+        '$_oauthBaseUrl/api/v1/me',
+      ];
+      for (final endpoint in endpoints) {
+        final response = await http.get(
+          Uri.parse(endpoint),
+          headers: {'Authorization': 'Bearer $accessToken'},
+        ).timeout(const Duration(seconds: 8));
+        if (response.statusCode != 200) continue;
+        final data = jsonDecode(response.body);
+        if (data is! Map<String, dynamic>) continue;
+        return _normalizeUserInfo(data);
+      }
+      return {};
+    } catch (e) {
+      debugPrint('Failed to fetch OIDC userinfo: $e');
+      return {};
+    }
+  }
+
+  Map<String, dynamic> _normalizeUserInfo(Map<String, dynamic> data) {
+    final nested = data['data'];
+    final source = nested is Map<String, dynamic> ? nested : data;
+    return {
+      ...source,
+      'id': source['id'] ?? source['sub'],
+      'email': source['email'],
+      'name': source['name'] ?? source['display_name'],
+      'image': source['image'] ?? source['picture'] ?? source['avatar_url'],
+    };
+  }
+
+  Future<void> _cacheUserInfo(Map<String, dynamic> userInfo) async {
+    await _storage.write(
+      key: AppConstants.cachedUserInfoKey,
+      value: jsonEncode(userInfo),
+    );
+  }
+
+  Future<Map<String, dynamic>?> _readCachedUserInfo() async {
+    try {
+      final raw = await _storage.read(key: AppConstants.cachedUserInfoKey);
+      if (raw == null || raw.isEmpty) return null;
+      final data = jsonDecode(raw);
+      return data is Map<String, dynamic> ? data : null;
+    } catch (e) {
+      debugPrint('Failed to read cached user info: $e');
+      return null;
+    }
   }
 
   // ---- PKCE helpers ----
@@ -242,7 +360,24 @@ class AuthService {
     if (parts.length != 3) {
       throw Exception('Invalid JWT format');
     }
-    final payload = utf8.decode(base64Url.decode(base64Url.normalize(parts[1])));
+    final payload =
+        utf8.decode(base64Url.decode(base64Url.normalize(parts[1])));
     return jsonDecode(payload) as Map<String, dynamic>;
+  }
+
+  Map<String, dynamic> _decodeJwtPayloadOrEmpty(String token) {
+    try {
+      final payload = _decodeJwtPayload(token);
+      return {
+        ...payload,
+        'id': payload['id'] ?? payload['sub'],
+        'email': payload['email'],
+        'name': payload['name'] ?? payload['display_name'],
+        'image':
+            payload['image'] ?? payload['picture'] ?? payload['avatar_url'],
+      };
+    } catch (_) {
+      return {};
+    }
   }
 }

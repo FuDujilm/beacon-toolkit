@@ -462,7 +462,7 @@ class SatelliteService {
         currentElevation: activeSample?.elevation,
         currentAzimuth: activeSample?.azimuth,
         currentRangeKm: activeSample?.rangeKm,
-        dopplerFactor: pass.max.dopplerFactor,
+        dopplerFactor: _finiteOrNull(pass.max.dopplerFactor),
         source: 'TLE SGP4',
         lookSamples: samples,
         trackPoints: samples.map((sample) => sample.groundPoint).toList(),
@@ -513,6 +513,7 @@ class SatelliteService {
       elevation: point.lookAngle.elevation.degrees,
       azimuth: point.lookAngle.azimuth.degrees,
       rangeKm: point.lookAngle.range,
+      dopplerFactor: _finiteOrNull(point.dopplerFactor),
       groundPoint: GroundTrackPoint(
         time: point.point.time.toDateTime().toLocal(),
         latitude: location.latitude.degrees,
@@ -552,6 +553,10 @@ class SatelliteService {
     if (value > 180) value -= 360;
     if (value < -180) value += 360;
     return value;
+  }
+
+  double? _finiteOrNull(double value) {
+    return value.isFinite ? value : null;
   }
 
   _GeoPoint? _gridToLatLon(String grid) {

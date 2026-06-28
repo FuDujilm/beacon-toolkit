@@ -53,6 +53,74 @@ class AppEndpointSettingsService {
     );
   }
 
+  Future<QrzSettings> getQrzSettings() async {
+    final username = await _readStorageValue(AppConstants.qrzUsernameKey);
+    final password = await _readStorageValue(AppConstants.qrzPasswordKey);
+    final mode = await _readStorageValue(AppConstants.qrzLookupModeKey);
+    final debugEnabled =
+        await _readStorageValue(AppConstants.qrzDebugEnabledKey);
+    return QrzSettings(
+      username: username?.trim() ?? '',
+      password: password?.trim() ?? '',
+      mode: QrzLookupMode.fromKey(mode),
+      debugEnabled: debugEnabled == 'true',
+    );
+  }
+
+  Future<void> updateQrzSettings(QrzSettings settings) async {
+    await _writeOrDelete(AppConstants.qrzUsernameKey, settings.username);
+    await _writeOrDelete(AppConstants.qrzPasswordKey, settings.password);
+    await _storage.write(
+      key: AppConstants.qrzLookupModeKey,
+      value: settings.mode.key,
+    );
+    await _storage.write(
+      key: AppConstants.qrzDebugEnabledKey,
+      value: settings.debugEnabled.toString(),
+    );
+  }
+
+  Future<String> getQrzSessionKey() async {
+    final key = await _readStorageValue(AppConstants.qrzSessionKey);
+    return key?.trim() ?? '';
+  }
+
+  Future<void> updateQrzSessionKey(String sessionKey) async {
+    await _writeOrDelete(AppConstants.qrzSessionKey, sessionKey);
+  }
+
+  Future<LlmSettings> getLlmSettings() async {
+    final enabled = await _readStorageValue(AppConstants.llmEnabledKey);
+    final baseUrl = await _readStorageValue(AppConstants.llmBaseUrlKey);
+    final apiKey = await _readStorageValue(AppConstants.llmApiKeyKey);
+    final model = await _readStorageValue(AppConstants.llmModelKey);
+    return LlmSettings(
+      enabled: enabled == 'true',
+      baseUrl: normalizeOpenAiCompatibleBaseUrl(
+        baseUrl == null || baseUrl.trim().isEmpty
+            ? LlmSettings.defaultBaseUrl
+            : baseUrl,
+      ),
+      apiKey: apiKey?.trim() ?? '',
+      model: model?.trim().isNotEmpty == true
+          ? model!.trim()
+          : LlmSettings.defaultModel,
+    );
+  }
+
+  Future<void> updateLlmSettings(LlmSettings settings) async {
+    await _storage.write(
+      key: AppConstants.llmEnabledKey,
+      value: settings.enabled.toString(),
+    );
+    await _writeOrDelete(
+      AppConstants.llmBaseUrlKey,
+      normalizeOpenAiCompatibleBaseUrl(settings.baseUrl),
+    );
+    await _writeOrDelete(AppConstants.llmApiKeyKey, settings.apiKey);
+    await _writeOrDelete(AppConstants.llmModelKey, settings.model);
+  }
+
   Future<Map<String, dynamic>> testBeaconApiConnection(String url) async {
     final normalized = normalizeBeaconApiBaseUrl(url);
     final dio = Dio(
@@ -117,6 +185,24 @@ class AppEndpointSettingsService {
     return uri.replace(path: '$normalizedPath/api/v1/').toString();
   }
 
+  String normalizeOpenAiCompatibleBaseUrl(String url) {
+    final trimmed = url.trim();
+    if (trimmed.isEmpty) return LlmSettings.defaultBaseUrl;
+    final withTrailingSlash = trimmed.endsWith('/') ? trimmed : '$trimmed/';
+    final uri = Uri.tryParse(withTrailingSlash);
+    if (uri == null || !uri.hasScheme || uri.host.isEmpty) {
+      return withTrailingSlash;
+    }
+    final normalizedPath = uri.path.replaceFirst(RegExp(r'/+$'), '');
+    if (normalizedPath.endsWith('/chat/completions')) {
+      return uri.replace(path: '$normalizedPath/').toString();
+    }
+    if (normalizedPath.endsWith('/v1')) {
+      return uri.replace(path: '$normalizedPath/chat/completions/').toString();
+    }
+    return uri.replace(path: '$normalizedPath/v1/chat/completions/').toString();
+  }
+
   Future<String?> _readStorageValue(String key) async {
     try {
       return await _storage.read(key: key);
@@ -131,6 +217,15 @@ class AppEndpointSettingsService {
     }
   }
 
+  Future<void> _writeOrDelete(String key, String value) async {
+    final normalized = value.trim();
+    if (normalized.isEmpty) {
+      await _storage.delete(key: key);
+      return;
+    }
+    await _storage.write(key: key, value: normalized);
+  }
+
   String _connectionErrorMessage(Object e) {
     if (e is DioException) {
       if (e.type == DioExceptionType.connectionTimeout) {
@@ -143,4 +238,57 @@ class AppEndpointSettingsService {
     }
     return e.toString();
   }
+}
+
+enum QrzLookupMode {
+  automatic('automatic'),
+  beaconOnly('beacon_only'),
+  qrzOnly('qrz_only');
+
+  final String key;
+
+  const QrzLookupMode(this.key);
+
+  static QrzLookupMode fromKey(String? key) {
+    return QrzLookupMode.values.firstWhere(
+      (mode) => mode.key == key,
+      orElse: () => QrzLookupMode.automatic,
+    );
+  }
+}
+
+class QrzSettings {
+  final String username;
+  final String password;
+  final QrzLookupMode mode;
+  final bool debugEnabled;
+
+  const QrzSettings({
+    required this.username,
+    required this.password,
+    required this.mode,
+    this.debugEnabled = false,
+  });
+
+  bool get hasCredentials => username.isNotEmpty && password.isNotEmpty;
+}
+
+class LlmSettings {
+  static const String defaultBaseUrl =
+      'https://api.openai.com/v1/chat/completions/';
+  static const String defaultModel = 'gpt-4o-mini';
+
+  final bool enabled;
+  final String baseUrl;
+  final String apiKey;
+  final String model;
+
+  const LlmSettings({
+    required this.enabled,
+    required this.baseUrl,
+    required this.apiKey,
+    required this.model,
+  });
+
+  bool get isUsable => enabled && baseUrl.isNotEmpty && apiKey.isNotEmpty;
 }

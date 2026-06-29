@@ -25,6 +25,13 @@ const homeToolEntries = <HomeToolEntry>[
     color: Color(0xff347cff),
   ),
   HomeToolEntry(
+    id: 'beacon_scan',
+    title: '扫码确认',
+    subtitle: '扫描 Beacon 二维码确认 QSL 收妥',
+    icon: Icons.qr_code_scanner,
+    color: Color(0xff00a5c8),
+  ),
+  HomeToolEntry(
     id: 'qth_locator',
     title: 'QTH 定位',
     subtitle: '经纬度与 Maidenhead 网格定位',

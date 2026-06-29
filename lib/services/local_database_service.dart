@@ -33,20 +33,34 @@ class LocalDatabaseService {
 
     _database = await openDatabase(
       path,
-      version: 6,
+      version: 7,
       onCreate: (db, version) async {
         await db.execute('''
           CREATE TABLE qso_logs (
             id TEXT PRIMARY KEY,
             date_time TEXT NOT NULL,
             callsign TEXT NOT NULL,
+            station_callsign TEXT NOT NULL DEFAULT '',
             country TEXT NOT NULL,
             band TEXT NOT NULL,
             mode TEXT NOT NULL,
             frequency TEXT NOT NULL,
             report TEXT NOT NULL,
+            rst_sent TEXT NOT NULL DEFAULT '',
+            rst_received TEXT NOT NULL DEFAULT '',
             grid TEXT NOT NULL,
-            created_at TEXT NOT NULL
+            sat_name TEXT NOT NULL DEFAULT '',
+            prop_mode TEXT NOT NULL DEFAULT '',
+            notes TEXT NOT NULL DEFAULT '',
+            qsl_status TEXT NOT NULL DEFAULT 'none',
+            lotw_status TEXT NOT NULL DEFAULT 'none',
+            cloudlog_status TEXT NOT NULL DEFAULT 'none',
+            clublog_status TEXT NOT NULL DEFAULT 'none',
+            qrz_status TEXT NOT NULL DEFAULT 'none',
+            client_updated_at TEXT,
+            deleted_at TEXT,
+            created_at TEXT NOT NULL,
+            updated_at TEXT
           )
         ''');
         await db.execute(
@@ -93,6 +107,9 @@ class LocalDatabaseService {
         }
         if (oldVersion < 6) {
           await _createFrequencyAllocationTables(db);
+        }
+        if (oldVersion < 7) {
+          await _migrateQsoManagementFields(db);
         }
       },
     );
@@ -199,6 +216,84 @@ class LocalDatabaseService {
     if (!exists) {
       await db.execute('ALTER TABLE $table ADD COLUMN $column $type');
     }
+  }
+
+  Future<void> _migrateQsoManagementFields(Database db) async {
+    await _addColumnIfMissing(
+      db,
+      'qso_logs',
+      'station_callsign',
+      "TEXT NOT NULL DEFAULT ''",
+    );
+    await _addColumnIfMissing(
+      db,
+      'qso_logs',
+      'rst_sent',
+      "TEXT NOT NULL DEFAULT ''",
+    );
+    await _addColumnIfMissing(
+      db,
+      'qso_logs',
+      'rst_received',
+      "TEXT NOT NULL DEFAULT ''",
+    );
+    await _addColumnIfMissing(
+      db,
+      'qso_logs',
+      'sat_name',
+      "TEXT NOT NULL DEFAULT ''",
+    );
+    await _addColumnIfMissing(
+      db,
+      'qso_logs',
+      'prop_mode',
+      "TEXT NOT NULL DEFAULT ''",
+    );
+    await _addColumnIfMissing(
+      db,
+      'qso_logs',
+      'notes',
+      "TEXT NOT NULL DEFAULT ''",
+    );
+    await _addColumnIfMissing(
+      db,
+      'qso_logs',
+      'qsl_status',
+      "TEXT NOT NULL DEFAULT 'none'",
+    );
+    await _addColumnIfMissing(
+      db,
+      'qso_logs',
+      'lotw_status',
+      "TEXT NOT NULL DEFAULT 'none'",
+    );
+    await _addColumnIfMissing(
+      db,
+      'qso_logs',
+      'cloudlog_status',
+      "TEXT NOT NULL DEFAULT 'none'",
+    );
+    await _addColumnIfMissing(
+      db,
+      'qso_logs',
+      'clublog_status',
+      "TEXT NOT NULL DEFAULT 'none'",
+    );
+    await _addColumnIfMissing(
+      db,
+      'qso_logs',
+      'qrz_status',
+      "TEXT NOT NULL DEFAULT 'none'",
+    );
+    await _addColumnIfMissing(db, 'qso_logs', 'client_updated_at', 'TEXT');
+    await _addColumnIfMissing(db, 'qso_logs', 'deleted_at', 'TEXT');
+    await _addColumnIfMissing(db, 'qso_logs', 'updated_at', 'TEXT');
+    await db.execute('''
+      UPDATE qso_logs
+      SET rst_sent = CASE WHEN rst_sent = '' THEN report ELSE rst_sent END,
+          rst_received = CASE WHEN rst_received = '' THEN report ELSE rst_received END,
+          client_updated_at = COALESCE(client_updated_at, created_at)
+    ''');
   }
 
   Future<String?> getSetting(String key) async {
@@ -543,6 +638,11 @@ class LocalDatabaseService {
       log.toMap(),
       conflictAlgorithm: ConflictAlgorithm.replace,
     );
+  }
+
+  Future<void> deleteQsoLog(String id) async {
+    final db = await database;
+    await db.delete('qso_logs', where: 'id = ?', whereArgs: [id]);
   }
 
   Future<void> replaceQsoLogs(List<QsoLog> logs) async {

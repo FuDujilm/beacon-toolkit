@@ -36,6 +36,31 @@ class AppEndpointSettingsService {
     );
   }
 
+  Future<String> getBeaconFrontendBaseUrl() async {
+    final stored =
+        await _readStorageValue(AppConstants.beaconFrontendBaseUrlKey);
+    final normalized = normalizeBeaconFrontendBaseUrl(
+      stored == null || stored.trim().isEmpty
+          ? _defaultBeaconFrontendBaseUrl()
+          : stored,
+    );
+    if (stored != null && stored != normalized) {
+      await _storage.write(
+        key: AppConstants.beaconFrontendBaseUrlKey,
+        value: normalized,
+      );
+    }
+    return normalized;
+  }
+
+  Future<void> updateBeaconFrontendBaseUrl(String url) async {
+    final normalized = normalizeBeaconFrontendBaseUrl(url);
+    await _storage.write(
+      key: AppConstants.beaconFrontendBaseUrlKey,
+      value: normalized,
+    );
+  }
+
   Future<String> getTiandituToken() async {
     final token = await _readStorageValue(AppConstants.tiandituTokenKey);
     return token?.trim() ?? '';
@@ -183,6 +208,28 @@ class AppEndpointSettingsService {
       return uri.replace(path: '$normalizedPath/').toString();
     }
     return uri.replace(path: '$normalizedPath/api/v1/').toString();
+  }
+
+  String normalizeBeaconFrontendBaseUrl(String url) {
+    final trimmed = url.trim();
+    if (trimmed.isEmpty) return _defaultBeaconFrontendBaseUrl();
+    final withoutHash = trimmed.split('#').first;
+    final withTrailingSlash =
+        withoutHash.endsWith('/') ? withoutHash : '$withoutHash/';
+    final uri = Uri.tryParse(withTrailingSlash);
+    if (uri == null || !uri.hasScheme || uri.host.isEmpty) {
+      return withTrailingSlash;
+    }
+    return uri.replace(query: '', fragment: '').toString();
+  }
+
+  String _defaultBeaconFrontendBaseUrl() {
+    if (kIsWeb) {
+      final uri = Uri.base;
+      final path = uri.path.endsWith('/') ? uri.path : '${uri.path}/';
+      return uri.replace(path: path, query: '', fragment: '').toString();
+    }
+    return 'http://localhost:5273/';
   }
 
   String normalizeOpenAiCompatibleBaseUrl(String url) {

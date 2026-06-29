@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 
 import '../home/calendar_page.dart';
 import '../practice/practice_page.dart';
+import 'beacon_qr_scanner_page.dart';
 import 'frequency_table_page.dart';
 import 'callsign_lookup_page.dart';
 import 'grid_map_page.dart';
@@ -80,6 +81,17 @@ class _RadioToolsPageState extends State<RadioToolsPage> {
           MaterialPageRoute(builder: (_) => const CallsignLookupPage()),
         ),
         category: '其他',
+        isCommon: true,
+      ),
+      _RadioTool(
+        '扫码确认',
+        '扫描 Beacon 二维码确认日志/QSL 收妥',
+        Icons.qr_code_scanner,
+        const Color(0xff00a5c8),
+        () => Navigator.of(context).push(
+          MaterialPageRoute(builder: (_) => const BeaconQrScannerPage()),
+        ),
+        category: '日志',
         isCommon: true,
       ),
       _RadioTool(

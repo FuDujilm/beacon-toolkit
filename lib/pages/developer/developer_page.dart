@@ -14,6 +14,7 @@ class DeveloperPage extends StatefulWidget {
 class _DeveloperPageState extends State<DeveloperPage> {
   final _examApiUrlController = TextEditingController();
   final _beaconApiUrlController = TextEditingController();
+  final _beaconFrontendUrlController = TextEditingController();
   final _tiandituTokenController = TextEditingController();
   final _llmBaseUrlController = TextEditingController();
   final _llmApiKeyController = TextEditingController();
@@ -23,6 +24,7 @@ class _DeveloperPageState extends State<DeveloperPage> {
   bool _isLoading = true;
   bool _isSavingExamApi = false;
   bool _isSavingBeaconApi = false;
+  bool _isSavingBeaconFrontend = false;
   bool _isSavingTianditu = false;
   bool _isSavingLlm = false;
   bool _llmEnabled = false;
@@ -41,6 +43,7 @@ class _DeveloperPageState extends State<DeveloperPage> {
   void dispose() {
     _examApiUrlController.dispose();
     _beaconApiUrlController.dispose();
+    _beaconFrontendUrlController.dispose();
     _tiandituTokenController.dispose();
     _llmBaseUrlController.dispose();
     _llmApiKeyController.dispose();
@@ -53,15 +56,17 @@ class _DeveloperPageState extends State<DeveloperPage> {
     final results = await Future.wait([
       authService.getApiUrl(),
       _endpointSettingsService.getBeaconApiBaseUrl(),
+      _endpointSettingsService.getBeaconFrontendBaseUrl(),
       _endpointSettingsService.getTiandituToken(),
       _endpointSettingsService.getLlmSettings(),
     ]);
     if (!mounted) return;
-    final llmSettings = results[3] as LlmSettings;
+    final llmSettings = results[4] as LlmSettings;
     setState(() {
       _examApiUrlController.text = results[0] as String;
       _beaconApiUrlController.text = results[1] as String;
-      _tiandituTokenController.text = results[2] as String;
+      _beaconFrontendUrlController.text = results[2] as String;
+      _tiandituTokenController.text = results[3] as String;
       _llmEnabled = llmSettings.enabled;
       _llmBaseUrlController.text = llmSettings.baseUrl;
       _llmApiKeyController.text = llmSettings.apiKey;
@@ -148,6 +153,29 @@ class _DeveloperPageState extends State<DeveloperPage> {
       _showSnackBar('保存失败: $e', error: true);
     } finally {
       if (mounted) setState(() => _isSavingBeaconApi = false);
+    }
+  }
+
+  Future<void> _saveBeaconFrontendUrl() async {
+    final nextUrl = _beaconFrontendUrlController.text.trim();
+    if (nextUrl.isEmpty) {
+      _showSnackBar('请输入 Beacon 前端地址');
+      return;
+    }
+
+    setState(() => _isSavingBeaconFrontend = true);
+    try {
+      await _endpointSettingsService.updateBeaconFrontendBaseUrl(nextUrl);
+      final currentUrl =
+          await _endpointSettingsService.getBeaconFrontendBaseUrl();
+      if (!mounted) return;
+      setState(() => _beaconFrontendUrlController.text = currentUrl);
+      _showSnackBar('Beacon 前端地址已保存');
+    } catch (e) {
+      if (!mounted) return;
+      _showSnackBar('保存失败: $e', error: true);
+    } finally {
+      if (mounted) setState(() => _isSavingBeaconFrontend = false);
     }
   }
 
@@ -278,6 +306,41 @@ class _DeveloperPageState extends State<DeveloperPage> {
                       isSaving: _isSavingBeaconApi,
                       onTest: _testBeaconApiConnection,
                       onSave: _saveBeaconApiUrl,
+                    ),
+                    const SizedBox(height: 18),
+                    TextField(
+                      controller: _beaconFrontendUrlController,
+                      decoration: const InputDecoration(
+                        labelText: 'Beacon 前端地址',
+                        hintText: 'http://192.168.1.5:5273',
+                        border: OutlineInputBorder(),
+                      ),
+                      keyboardType: TextInputType.url,
+                    ),
+                    const SizedBox(height: 8),
+                    const _HelpText(
+                      '用于生成 beacon-api 相关公开页面链接，例如 QSL 收妥页面。保存服务器根地址即可。',
+                    ),
+                    const SizedBox(height: 12),
+                    SizedBox(
+                      width: double.infinity,
+                      child: FilledButton.icon(
+                        onPressed: _isSavingBeaconFrontend
+                            ? null
+                            : _saveBeaconFrontendUrl,
+                        icon: _isSavingBeaconFrontend
+                            ? const SizedBox(
+                                width: 18,
+                                height: 18,
+                                child: CircularProgressIndicator(
+                                  strokeWidth: 2,
+                                ),
+                              )
+                            : const Icon(Icons.save),
+                        label: Text(
+                          _isSavingBeaconFrontend ? '保存中...' : '保存 Beacon 前端地址',
+                        ),
+                      ),
                     ),
                   ],
                 ),

@@ -16,6 +16,7 @@ import '../../services/sepc_daily_report_service.dart';
 import '../../services/sepc_k_index_service.dart';
 import '../../services/user_settings_service.dart';
 import 'callsign_lookup_page.dart';
+import 'beacon_qr_scanner_page.dart';
 import 'frequency_table_page.dart';
 import 'grid_map_page.dart';
 import 'propagation_forecast_page.dart';
@@ -182,6 +183,11 @@ class _RadioHomePageState extends State<RadioHomePage> {
                 child: _HeroPanel(
                   radioProfile: _radioProfile,
                   onTitleTap: _handleTitleTap,
+                  onScanTap: () => Navigator.of(context).push(
+                    MaterialPageRoute(
+                      builder: (_) => const BeaconQrScannerPage(),
+                    ),
+                  ),
                 ),
               ),
             ),
@@ -300,6 +306,11 @@ class _RadioHomePageState extends State<RadioHomePage> {
           MaterialPageRoute(builder: (_) => const CallsignLookupPage()),
         );
         return;
+      case 'beacon_scan':
+        Navigator.of(context).push(
+          MaterialPageRoute(builder: (_) => const BeaconQrScannerPage()),
+        );
+        return;
       case 'qth_locator':
         Navigator.of(context).push(
           MaterialPageRoute(builder: (_) => const GridMapPage()),
@@ -377,10 +388,12 @@ class _RadioHomePageState extends State<RadioHomePage> {
 class _HeroPanel extends StatelessWidget {
   final RadioProfile radioProfile;
   final VoidCallback onTitleTap;
+  final VoidCallback onScanTap;
 
   const _HeroPanel({
     required this.radioProfile,
     required this.onTitleTap,
+    required this.onScanTap,
   });
 
   @override
@@ -412,6 +425,11 @@ class _HeroPanel extends StatelessWidget {
             size: 172,
             color: scheme.primary.withValues(alpha: 0.10),
           ),
+        ),
+        Positioned(
+          right: 18,
+          top: 48,
+          child: _HeroScanButton(onTap: onScanTap),
         ),
         Positioned(
           left: 22,
@@ -531,6 +549,43 @@ class _HeroPanel extends StatelessWidget {
           ),
         ),
       ],
+    );
+  }
+}
+
+class _HeroScanButton extends StatelessWidget {
+  final VoidCallback onTap;
+
+  const _HeroScanButton({required this.onTap});
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    return Material(
+      color: scheme.primary,
+      borderRadius: BorderRadius.circular(999),
+      clipBehavior: Clip.antiAlias,
+      elevation: 0,
+      child: InkWell(
+        onTap: onTap,
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 9),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Icon(Icons.qr_code_scanner, color: scheme.onPrimary, size: 18),
+              const SizedBox(width: 6),
+              Text(
+                '扫描',
+                style: TextStyle(
+                  color: scheme.onPrimary,
+                  fontWeight: FontWeight.w800,
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
     );
   }
 }

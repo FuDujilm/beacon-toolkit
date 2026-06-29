@@ -32,6 +32,7 @@ class AppConstants {
   static const String refreshTokenKey = 'refresh_token';
   static const String cachedUserInfoKey = 'cached_user_info';
   static const String beaconApiBaseUrlKey = 'beacon_api_base_url';
+  static const String beaconFrontendBaseUrlKey = 'beacon_frontend_base_url';
   static const String tiandituTokenKey = 'tianditu_token';
   static const String qrzUsernameKey = 'qrz_username';
   static const String qrzPasswordKey = 'qrz_password';

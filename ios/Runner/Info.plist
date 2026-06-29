@@ -37,6 +37,8 @@
 	<true/>
 	<key>NSLocationWhenInUseUsageDescription</key>
 	<string>Beacon 使用当前位置计算卫星过境方位和仰角。</string>
+	<key>NSCameraUsageDescription</key>
+	<string>Beacon 使用相机扫描二维码以解析日志确认和 QSL 收妥信息。</string>
 	<key>UILaunchStoryboardName</key>
 	<string>LaunchScreen</string>
 	<key>UIMainStoryboardFile</key>

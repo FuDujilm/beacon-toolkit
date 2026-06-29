@@ -1,8 +1,10 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import 'services/auth_service.dart';
+import 'services/beacon_qr_parser.dart';
 import 'services/theme_controller.dart';
 import 'pages/main_screen.dart';
+import 'pages/radio/qsl_public_page.dart';
 import 'models/user.dart';
 
 void main() {
@@ -55,9 +57,35 @@ class MyApp extends StatelessWidget {
             hasCustomTheme ? darkColorScheme.surface : scheme.darkScaffold,
         useMaterial3: true,
       ),
-      home: const MainScreen(),
+      home: _initialHome(),
+      onGenerateRoute: _onGenerateRoute,
     );
   }
+
+  Widget _initialHome() {
+    final route = _parsePublicQslRoute(Uri.base.fragment);
+    if (route != null) return route;
+    return const MainScreen();
+  }
+
+  Route<dynamic>? _onGenerateRoute(RouteSettings settings) {
+    final route = _parsePublicQslRoute(settings.name ?? '');
+    if (route == null) return null;
+    return MaterialPageRoute<void>(
+      builder: (_) => route,
+      settings: settings,
+    );
+  }
+}
+
+QslPublicPage? _parsePublicQslRoute(String rawRoute) {
+  final route = parseBeaconQslRouteFromText(rawRoute);
+  if (route == null) return null;
+  return QslPublicPage(
+    linkType: route.linkType,
+    token: route.token,
+    apiBaseUrl: route.apiBaseUrl,
+  );
 }
 
 class LoginPage extends StatefulWidget {

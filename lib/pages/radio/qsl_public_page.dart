@@ -34,6 +34,7 @@ class _QslPublicPageState extends State<QslPublicPage> {
   String? _successMessage;
   bool _isLoading = true;
   bool _isConfirming = false;
+  bool _receiptDone = false;
 
   bool get _isDynamic => widget.linkType == 'dynamic';
   bool get _isStatic => widget.linkType == 'static';
@@ -81,6 +82,8 @@ class _QslPublicPageState extends State<QslPublicPage> {
       setState(() {
         _apiBaseUrl = apiBaseUrl;
         _data = data;
+        _receiptDone = data.items
+            .any((item) => item.qslStatus.toLowerCase() == 'received');
       });
     } catch (error) {
       if (!mounted) return;
@@ -93,6 +96,11 @@ class _QslPublicPageState extends State<QslPublicPage> {
   Future<void> _confirm() async {
     final data = _data;
     if (data == null || data.items.isEmpty) return;
+    final callsign = _callsignController.text.trim().toUpperCase();
+    if (callsign.isEmpty) {
+      setState(() => _errorMessage = '请输入自己的呼号后再登记收妥');
+      return;
+    }
     setState(() {
       _isConfirming = true;
       _errorMessage = null;
@@ -105,12 +113,36 @@ class _QslPublicPageState extends State<QslPublicPage> {
         apiBaseUrl: _apiBaseUrl,
         qsoIds: data.items.map((item) => item.id).toList(),
         verifierCode: _verifierController.text,
-        confirmerCallsign: _callsignController.text,
+        confirmerCallsign: callsign,
         note: _noteController.text,
       );
       if (!mounted) return;
-      setState(() => _successMessage = '已确认 $confirmed 条 QSL 收妥');
-      await _load(keepSuccessMessage: true);
+      setState(() {
+        _receiptDone = true;
+        _successMessage = confirmed > 0
+            ? '已登记 $confirmed 条 QSL 卡片收妥'
+            : '该 QSL 卡片此前已经收妥，无需重复提交';
+        _data = QslPublicPageData(
+          linkType: data.linkType,
+          verifierRequired: data.verifierRequired,
+          items: [
+            for (final item in data.items)
+              QslPublicQsoItem(
+                id: item.id,
+                dateTime: item.dateTime,
+                callsign: item.callsign,
+                stationCallsign: item.stationCallsign,
+                band: item.band,
+                mode: item.mode,
+                frequency: item.frequency,
+                satName: item.satName,
+                propMode: item.propMode,
+                qsoConfirmStatus: item.qsoConfirmStatus,
+                qslStatus: 'received',
+              ),
+          ],
+        );
+      });
     } catch (error) {
       if (!mounted) return;
       setState(() => _errorMessage = _friendlyError(error));
@@ -198,8 +230,29 @@ class _QslPublicPageState extends State<QslPublicPage> {
                     color: scheme.primary,
                   )
                 else ...[
+                  if (_data!.items.isNotEmpty) ...[
+                    _SenderCard(
+                      callsign: _data!.items
+                          .map((item) => item.stationCallsign)
+                          .firstWhere(
+                            (value) => value.trim().isNotEmpty,
+                            orElse: () => '未填写',
+                          ),
+                    ),
+                    const SizedBox(height: 12),
+                  ],
+                  if (_receiptDone) ...[
+                    const _MessageCard(
+                      icon: Icons.check_circle_outline,
+                      title: 'QSL 卡片已标记收妥',
+                      message:
+                          '该操作只更新发出方日志里的 QSL 收妥状态；QSO 通联确认需要通过独立的 QSO 确认流程完成。',
+                      color: Colors.green,
+                    ),
+                    const SizedBox(height: 12),
+                  ],
                   Text(
-                    '待确认通联',
+                    'QSL 卡片对应记录',
                     style: TextStyle(
                       color: scheme.onSurface,
                       fontSize: 18,
@@ -212,13 +265,14 @@ class _QslPublicPageState extends State<QslPublicPage> {
                     const SizedBox(height: 10),
                   ],
                   const SizedBox(height: 4),
-                  _ReceiptForm(
-                    callsignController: _callsignController,
-                    noteController: _noteController,
-                    isConfirming: _isConfirming,
-                    count: _data!.items.length,
-                    onConfirm: _confirm,
-                  ),
+                  if (!_receiptDone)
+                    _ReceiptForm(
+                      callsignController: _callsignController,
+                      noteController: _noteController,
+                      isConfirming: _isConfirming,
+                      count: _data!.items.length,
+                      onConfirm: _confirm,
+                    ),
                 ],
               ],
             ],
@@ -345,6 +399,11 @@ class _QslQsoCard extends StatelessWidget {
       if (item.propMode.isNotEmpty) item.propMode,
       if (item.satName.isNotEmpty) item.satName,
     ].join(' · ');
+    final qsoStatus = item.qsoConfirmStatus.toLowerCase() == 'confirmed'
+        ? 'QSO 已确认'
+        : 'QSO 未确认';
+    final qslStatus =
+        item.qslStatus.toLowerCase() == 'received' ? 'QSL 已收妥' : 'QSL 待收妥';
     return Card(
       margin: EdgeInsets.zero,
       child: Padding(
@@ -354,10 +413,10 @@ class _QslQsoCard extends StatelessWidget {
           children: [
             Row(
               children: [
-                Expanded(
+                const Expanded(
                   child: Text(
-                    item.callsign.isEmpty ? '未知呼号' : item.callsign,
-                    style: const TextStyle(
+                    'QSL 卡片记录',
+                    style: TextStyle(
                       fontSize: 22,
                       fontWeight: FontWeight.w900,
                     ),
@@ -365,6 +424,15 @@ class _QslQsoCard extends StatelessWidget {
                 ),
                 _Pill(text: item.mode.isEmpty ? 'MODE' : item.mode),
               ],
+            ),
+            const SizedBox(height: 10),
+            Text(
+              '发出方 ${item.stationCallsign.isEmpty ? '未填写' : item.stationCallsign} / $qsoStatus / $qslStatus',
+              style: TextStyle(
+                color: scheme.onSurfaceVariant,
+                fontSize: 13,
+                fontWeight: FontWeight.w700,
+              ),
             ),
             const SizedBox(height: 10),
             Wrap(
@@ -383,8 +451,42 @@ class _QslQsoCard extends StatelessWidget {
             ),
             const SizedBox(height: 10),
             Text(
-              '确认后，对方的 beacon-api 日志会标记为 QSL 已收妥。',
+              '登记后，发出方的 beacon-api 日志会标记为 QSL 已收妥；这不是 QSO 通联确认。',
               style: TextStyle(color: scheme.onSurfaceVariant, fontSize: 13),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _SenderCard extends StatelessWidget {
+  final String callsign;
+
+  const _SenderCard({required this.callsign});
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    return Card(
+      margin: EdgeInsets.zero,
+      child: Padding(
+        padding: const EdgeInsets.all(14),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              '发出 QSL 方呼号',
+              style: TextStyle(
+                color: scheme.onSurfaceVariant,
+                fontWeight: FontWeight.w700,
+              ),
+            ),
+            const SizedBox(height: 4),
+            Text(
+              callsign,
+              style: const TextStyle(fontSize: 22, fontWeight: FontWeight.w900),
             ),
           ],
         ),
@@ -425,7 +527,8 @@ class _ReceiptForm extends StatelessWidget {
             TextField(
               controller: callsignController,
               decoration: const InputDecoration(
-                labelText: '确认方呼号（可选）',
+                labelText: '我的呼号（收妥方）',
+                hintText: '例如 BA4QBQ',
                 border: OutlineInputBorder(),
               ),
               textCapitalization: TextCapitalization.characters,
@@ -450,7 +553,7 @@ class _ReceiptForm extends StatelessWidget {
                       child: CircularProgressIndicator(strokeWidth: 2),
                     )
                   : const Icon(Icons.mark_email_read_outlined),
-              label: Text(isConfirming ? '确认中...' : '确认 $count 条 QSL 收妥'),
+              label: Text(isConfirming ? '提交中...' : '登记 $count 条 QSL 卡片收妥'),
             ),
           ],
         ),

@@ -1,21 +1,43 @@
+import 'dart:io';
+import 'dart:ui' as ui;
+
 import 'package:dio/dio.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/rendering.dart';
 import 'package:flutter/services.dart';
+import 'package:path_provider/path_provider.dart';
 import 'package:qr_flutter/qr_flutter.dart';
 
 import '../../models/exam_result.dart';
 import '../../models/practice_history.dart';
 import '../../models/qso_log.dart';
+import '../../models/radio_profile.dart';
 import '../../services/exam_service.dart';
+import '../../services/app_endpoint_settings_service.dart';
 import '../../services/local_database_service.dart';
 import '../../services/question_service.dart';
 import '../../services/qso_management_service.dart';
+import '../../services/qso_quick_template_service.dart';
 import '../../services/user_settings_service.dart';
 
 const _qsoColor = Color(0xff20d174);
 const _studyColor = Color(0xff3889ff);
 const _mixedColor = Color(0xffffb547);
 const _qsoWarningColor = Color(0xffe84d4f);
+
+class _DynamicQslOptions {
+  final bool verifierRequired;
+  final int verifierValidDays;
+  final bool verifierNeverExpires;
+  final String? verifierCode;
+
+  const _DynamicQslOptions({
+    required this.verifierRequired,
+    required this.verifierValidDays,
+    required this.verifierNeverExpires,
+    this.verifierCode,
+  });
+}
 
 class RadioLogPage extends StatefulWidget {
   const RadioLogPage({super.key});
@@ -30,6 +52,9 @@ class _RadioLogPageState extends State<RadioLogPage> {
   final _examService = ExamService();
   final _databaseService = LocalDatabaseService();
   final _qsoManagementService = QsoManagementService();
+  late final _qsoQuickTemplateService =
+      QsoQuickTemplateService(databaseService: _databaseService);
+  final _endpointSettingsService = const AppEndpointSettingsService();
 
   DateTime _focusedMonth = DateTime(DateTime.now().year, DateTime.now().month);
   DateTime _selectedDate = DateTime.now();
@@ -145,11 +170,16 @@ class _RadioLogPageState extends State<RadioLogPage> {
   }
 
   Future<void> _openAddQsoSheet() async {
+    final stationCallsign = await _loadDefaultStationCallsign();
+    if (!mounted) return;
     final log = await showModalBottomSheet<QsoLog>(
       context: context,
       isScrollControlled: true,
       useSafeArea: true,
-      builder: (context) => _AddQsoSheet(initialDate: _selectedDate),
+      builder: (context) => _AddQsoSheet(
+        initialDate: _selectedDate,
+        defaultStationCallsign: stationCallsign,
+      ),
     );
 
     if (log == null) return;
@@ -168,6 +198,8 @@ class _RadioLogPageState extends State<RadioLogPage> {
   }
 
   Future<void> _openEditQsoSheet(QsoLog existing) async {
+    final stationCallsign = await _loadDefaultStationCallsign();
+    if (!mounted) return;
     final updated = await showModalBottomSheet<QsoLog>(
       context: context,
       isScrollControlled: true,
@@ -175,6 +207,7 @@ class _RadioLogPageState extends State<RadioLogPage> {
       builder: (context) => _AddQsoSheet(
         initialDate: existing.date,
         initialLog: existing,
+        defaultStationCallsign: stationCallsign,
       ),
     );
 
@@ -211,7 +244,7 @@ class _RadioLogPageState extends State<RadioLogPage> {
           SnackBar(
             content: Text(
               errorDateSummary == null
-                  ? '没有可同步的完整通联，请先补全呼号、频段、模式和频率'
+                  ? '没有可同步的完整通联，请先补全本台呼号、对方呼号、频段、模式和频率'
                   : '$errorDateSummary 存在错误数据，请补全后再同步',
             ),
           ),
@@ -258,6 +291,32 @@ class _RadioLogPageState extends State<RadioLogPage> {
 
   bool _isSyncableQsoLog(QsoLog log) {
     return _qsoMissingRequiredFields(log).isEmpty;
+  }
+
+  Future<String> _loadDefaultStationCallsign() async {
+    try {
+      var profile = await _databaseService.getRadioProfile();
+      if (_isUsableStationCallsign(profile.callsign)) {
+        return profile.callsign.trim().toUpperCase();
+      }
+
+      final settings = await _settingsService.getSettings();
+      final remoteCallsign = settings['callsign']?.toString().trim();
+      if (remoteCallsign != null && remoteCallsign.isNotEmpty) {
+        final callsign = remoteCallsign.toUpperCase();
+        profile = profile.copyWith(callsign: callsign);
+        await _databaseService.saveRadioProfile(profile);
+        return callsign;
+      }
+    } catch (_) {
+      // 本台呼号只是表单默认值，同步失败不阻断新增通联。
+    }
+    return '';
+  }
+
+  bool _isUsableStationCallsign(String callsign) {
+    final value = callsign.trim();
+    return value.isNotEmpty && value != RadioProfile.defaults.callsign;
   }
 
   String _friendlySyncError(Object error, {String? invalidDateSummary}) {
@@ -325,62 +384,67 @@ class _RadioLogPageState extends State<RadioLogPage> {
   }
 
   Future<void> _openQuickQsoDialog() async {
-    final controller = TextEditingController(text: '20260721 so50 qso ba4qbq');
-    final text = await showDialog<String>(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: const Text('快速记录'),
-        content: TextField(
-          controller: controller,
-          autofocus: true,
-          decoration: const InputDecoration(
-            labelText: '通联描述',
-            hintText: '例如 20260721 so50 qso ba4qbq',
-          ),
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.of(context).pop(),
-            child: const Text('取消'),
-          ),
-          FilledButton(
-            onPressed: () => Navigator.of(context).pop(controller.text),
-            child: const Text('解析并保存'),
-          ),
-        ],
-      ),
-    );
-    controller.dispose();
-    if (text == null || text.trim().isEmpty) return;
+    final templates = await _qsoQuickTemplateService.getTemplates();
+    if (!mounted) return;
+    final result = await _showQuickQsoDialog(templates);
+    if (result == null || result.text.trim().isEmpty) return;
 
     try {
-      final parsed = await _qsoManagementService.quickParse(text);
-      final date = parsed.date == null
-          ? _selectedDate
-          : DateTime.tryParse(parsed.date!) ?? _selectedDate;
-      final now = TimeOfDay.now();
-      final log = QsoLog(
-        time: now,
-        callsign: parsed.callsign ?? '',
-        country: '',
-        band: parsed.propMode == 'SAT' ? 'sat' : '20m',
-        mode: parsed.propMode == 'SAT' ? 'FM' : 'FT8',
-        frequency: '',
-        report: '',
-        grid: '',
-        satName: parsed.satName ?? '',
-        propMode: parsed.propMode ?? '',
-        notes: text.trim(),
-        date: DateTime(date.year, date.month, date.day),
-      );
-      if (log.callsign.isEmpty) {
-        throw Exception('未识别到呼号');
+      final lines = result.text
+          .split(RegExp(r'\r?\n'))
+          .map((line) => line.trim())
+          .where((line) => line.isNotEmpty)
+          .toList();
+      if (lines.isEmpty) return;
+
+      final stationCallsign = await _loadDefaultStationCallsign();
+      final logs = <QsoLog>[];
+      for (final line in lines) {
+        final template = result.template;
+        if (template != null) {
+          logs.add(_buildTemplateQuickLog(
+            line: line,
+            template: template,
+            stationCallsign: stationCallsign,
+          ));
+        } else {
+          final parsed = await _qsoManagementService.quickParse(line);
+          final date = parsed.date == null
+              ? _selectedDate
+              : DateTime.tryParse(parsed.date!) ?? _selectedDate;
+          final now = TimeOfDay.now();
+          logs.add(
+            QsoLog(
+              time: now,
+              callsign: parsed.callsign ?? '',
+              stationCallsign: stationCallsign,
+              country: '',
+              band: parsed.propMode == 'SAT' ? '' : '20m',
+              mode: parsed.propMode == 'SAT' ? 'FM' : 'FT8',
+              frequency: '',
+              report: '',
+              grid: '',
+              satName: parsed.satName ?? '',
+              propMode: parsed.propMode ?? '',
+              notes: line,
+              date: DateTime(date.year, date.month, date.day),
+            ),
+          );
+        }
       }
-      await _databaseService.insertQsoLog(log);
+
+      for (final log in logs) {
+        await _databaseService.insertQsoLog(log);
+      }
       await _loadLogs();
       if (!mounted) return;
+      final incompleteCount =
+          logs.where((log) => _qsoMissingRequiredFields(log).isNotEmpty).length;
+      final suffix = incompleteCount > 0 ? '，其中 $incompleteCount 条待补全' : '';
+      final templateName =
+          result.template == null ? '' : '（模板：${result.template!.name.trim()}）';
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('已保存快速通联：${log.callsign}')),
+        SnackBar(content: Text('已保存 ${logs.length} 条快速通联$templateName$suffix')),
       );
     } catch (error) {
       if (!mounted) return;
@@ -390,30 +454,150 @@ class _RadioLogPageState extends State<RadioLogPage> {
     }
   }
 
-  Future<void> _openDynamicQslDialog() async {
-    var verifierRequired = false;
-    final result = await showDialog<bool>(
+  Future<_QuickQsoDialogResult?> _showQuickQsoDialog(
+    List<QsoQuickTemplate> initialTemplates,
+  ) async {
+    final controller = TextEditingController();
+    var templates = List<QsoQuickTemplate>.from(initialTemplates);
+    QsoQuickTemplate? selectedTemplate =
+        templates.isNotEmpty ? templates.first : null;
+
+    Future<void> saveTemplates() async {
+      await _qsoQuickTemplateService.saveTemplates(templates);
+    }
+
+    Future<void> openTemplateEditor(
+      BuildContext dialogContext,
+      void Function(void Function()) setDialogState, [
+      QsoQuickTemplate? editingTemplate,
+    ]) async {
+      final edited = await showDialog<QsoQuickTemplate>(
+        context: dialogContext,
+        builder: (context) => _QuickTemplateEditorDialog(
+          template: editingTemplate,
+        ),
+      );
+      if (edited == null) return;
+
+      setDialogState(() {
+        final index =
+            templates.indexWhere((template) => template.id == edited.id);
+        if (index >= 0) {
+          templates[index] = edited;
+        } else {
+          templates = [...templates, edited];
+        }
+        selectedTemplate = edited;
+      });
+      await saveTemplates();
+    }
+
+    final result = await showDialog<_QuickQsoDialogResult>(
       context: context,
       builder: (context) => StatefulBuilder(
         builder: (context, setDialogState) => AlertDialog(
-          title: const Text('动态 QSL 收妥链接'),
-          content: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              SwitchListTile(
-                contentPadding: EdgeInsets.zero,
-                title: const Text('需要验证码'),
-                value: verifierRequired,
-                onChanged: (value) =>
-                    setDialogState(() => verifierRequired = value),
+          title: const Text('快速记录'),
+          content: SizedBox(
+            width: 460,
+            child: SingleChildScrollView(
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    '模板',
+                    style: Theme.of(context).textTheme.labelLarge,
+                  ),
+                  const SizedBox(height: 8),
+                  Wrap(
+                    spacing: 8,
+                    runSpacing: 8,
+                    children: [
+                      ChoiceChip(
+                        label: const Text('不使用模板'),
+                        selected: selectedTemplate == null,
+                        onSelected: (_) => setDialogState(() {
+                          selectedTemplate = null;
+                        }),
+                      ),
+                      for (final template in templates)
+                        ChoiceChip(
+                          label: Text(template.name),
+                          selected: selectedTemplate?.id == template.id,
+                          onSelected: (_) => setDialogState(() {
+                            selectedTemplate = template;
+                          }),
+                        ),
+                    ],
+                  ),
+                  const SizedBox(height: 8),
+                  Row(
+                    children: [
+                      TextButton.icon(
+                        onPressed: () => openTemplateEditor(
+                          context,
+                          setDialogState,
+                        ),
+                        icon: const Icon(Icons.add),
+                        label: const Text('新增模板'),
+                      ),
+                      const Spacer(),
+                      if (selectedTemplate != null) ...[
+                        IconButton(
+                          tooltip: '编辑模板',
+                          onPressed: () => openTemplateEditor(
+                            context,
+                            setDialogState,
+                            selectedTemplate,
+                          ),
+                          icon: const Icon(Icons.edit_outlined),
+                        ),
+                        IconButton(
+                          tooltip: '删除模板',
+                          onPressed: () async {
+                            final deleted = selectedTemplate;
+                            if (deleted == null) return;
+                            setDialogState(() {
+                              templates = templates
+                                  .where(
+                                      (template) => template.id != deleted.id)
+                                  .toList();
+                              selectedTemplate =
+                                  templates.isNotEmpty ? templates.first : null;
+                            });
+                            await saveTemplates();
+                          },
+                          icon: const Icon(Icons.delete_outline),
+                        ),
+                      ],
+                    ],
+                  ),
+                  if (selectedTemplate != null) ...[
+                    const SizedBox(height: 4),
+                    _QuickTemplateSummary(template: selectedTemplate!),
+                  ],
+                  const SizedBox(height: 14),
+                  TextField(
+                    controller: controller,
+                    autofocus: true,
+                    minLines: 5,
+                    maxLines: 10,
+                    textCapitalization: TextCapitalization.characters,
+                    decoration: InputDecoration(
+                      labelText: selectedTemplate == null ? '通联描述' : '对方呼号',
+                      hintText: selectedTemplate == null
+                          ? '每行一条，例如：\n20260721 so50 qso ba4qbq\n20260721 iss qso bd8epn'
+                          : '每行一个呼号，例如：\nBA4QBQ\nBD8EPN',
+                      helperText: selectedTemplate == null
+                          ? '换行会保存为多条通联记录'
+                          : '模板会自动填入当前时间、频段、模式和上下行频率',
+                      alignLabelWithHint: true,
+                      border: const OutlineInputBorder(),
+                    ),
+                  ),
+                ],
               ),
-              const SizedBox(height: 8),
-              Text(
-                verifierRequired
-                    ? '动态链接会保持固定，验证码由系统生成并短时有效。'
-                    : '动态链接会展示当前用户待收妥的通联摘要，适合打印固定二维码。',
-              ),
-            ],
+            ),
           ),
           actions: [
             TextButton(
@@ -421,21 +605,240 @@ class _RadioLogPageState extends State<RadioLogPage> {
               child: const Text('取消'),
             ),
             FilledButton(
-              onPressed: () => Navigator.of(context).pop(verifierRequired),
+              onPressed: () => Navigator.of(context).pop(
+                _QuickQsoDialogResult(
+                  text: controller.text,
+                  template: selectedTemplate,
+                ),
+              ),
+              child: const Text('保存'),
+            ),
+          ],
+        ),
+      ),
+    );
+    controller.dispose();
+    return result;
+  }
+
+  QsoLog _buildTemplateQuickLog({
+    required String line,
+    required QsoQuickTemplate template,
+    required String stationCallsign,
+  }) {
+    final date = _extractQuickDate(line) ?? _selectedDate;
+    final now = DateTime.now();
+    final callsign = _extractTemplateCallsign(line, template);
+    return QsoLog(
+      time: TimeOfDay(hour: now.hour, minute: now.minute),
+      callsign: callsign,
+      stationCallsign: stationCallsign,
+      country: '',
+      band: template.band.trim(),
+      mode: template.mode.trim().toUpperCase(),
+      frequency: template.downlinkFrequency.trim(),
+      report: '',
+      grid: '',
+      satName: template.satName.trim(),
+      propMode: template.propMode.trim(),
+      notes: _templateQuickNote(line, template),
+      date: DateTime(date.year, date.month, date.day),
+    );
+  }
+
+  DateTime? _extractQuickDate(String text) {
+    final match = RegExp(r'\b(20\d{2})(\d{2})(\d{2})\b').firstMatch(text);
+    if (match == null) return null;
+    final year = int.tryParse(match.group(1)!);
+    final month = int.tryParse(match.group(2)!);
+    final day = int.tryParse(match.group(3)!);
+    if (year == null || month == null || day == null) return null;
+    return DateTime.tryParse(
+      '${year.toString().padLeft(4, '0')}-'
+      '${month.toString().padLeft(2, '0')}-'
+      '${day.toString().padLeft(2, '0')}',
+    );
+  }
+
+  String _extractTemplateCallsign(String line, QsoQuickTemplate template) {
+    final satToken = _normalizeQuickToken(template.satName);
+    final tokens = line
+        .toUpperCase()
+        .split(RegExp(r'[\s,;，；]+'))
+        .map((token) => token.trim())
+        .where((token) => token.isNotEmpty)
+        .toList();
+    for (final token in tokens.reversed) {
+      if (RegExp(r'^20\d{6}$').hasMatch(token)) continue;
+      if (_normalizeQuickToken(token) == satToken) continue;
+      if (token == 'QSO' || token == 'CQ') continue;
+      if (RegExp(r'^[A-Z0-9]{1,4}\d[A-Z0-9]{1,4}(?:/[A-Z0-9]+)?$')
+          .hasMatch(token)) {
+        return token;
+      }
+    }
+    return line.trim().toUpperCase();
+  }
+
+  String _normalizeQuickToken(String value) {
+    return value.toUpperCase().replaceAll(RegExp(r'[^A-Z0-9]'), '');
+  }
+
+  String _templateQuickNote(String line, QsoQuickTemplate template) {
+    final parts = [
+      '快速模板：${template.name.trim()}',
+      if (template.uplinkFrequency.trim().isNotEmpty)
+        '上行：${template.uplinkFrequency.trim()}',
+      if (template.downlinkFrequency.trim().isNotEmpty)
+        '下行：${template.downlinkFrequency.trim()}',
+      if (line.trim().isNotEmpty) '原文：${line.trim()}',
+    ];
+    return parts.join('；');
+  }
+
+  Future<void> _openDynamicQslDialog() async {
+    var verifierRequired = false;
+    var customVerifierEnabled = false;
+    var verifierNeverExpires = false;
+    String? customVerifierError;
+    final validDaysController = TextEditingController(text: '7');
+    final customVerifierController = TextEditingController();
+    final result = await showDialog<_DynamicQslOptions>(
+      context: context,
+      builder: (context) => StatefulBuilder(
+        builder: (context, setDialogState) => AlertDialog(
+          title: const Text('动态 QSL 收妥链接'),
+          content: SingleChildScrollView(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                SwitchListTile(
+                  contentPadding: EdgeInsets.zero,
+                  title: const Text('需要验证码'),
+                  value: verifierRequired,
+                  onChanged: (value) => setDialogState(() {
+                    verifierRequired = value;
+                    if (!value) {
+                      customVerifierEnabled = false;
+                      verifierNeverExpires = false;
+                      customVerifierError = null;
+                    }
+                  }),
+                ),
+                const SizedBox(height: 8),
+                if (verifierRequired) ...[
+                  SwitchListTile(
+                    contentPadding: EdgeInsets.zero,
+                    title: const Text('自定义验证码'),
+                    subtitle: const Text('关闭时由系统生成字母数字验证码'),
+                    value: customVerifierEnabled,
+                    onChanged: (value) => setDialogState(() {
+                      customVerifierEnabled = value;
+                      customVerifierError = null;
+                    }),
+                  ),
+                  if (customVerifierEnabled) ...[
+                    const SizedBox(height: 8),
+                    TextField(
+                      controller: customVerifierController,
+                      textCapitalization: TextCapitalization.characters,
+                      decoration: InputDecoration(
+                        labelText: '自定义验证码',
+                        helperText: '4-32 位英文字母或数字',
+                        errorText: customVerifierError,
+                        border: const OutlineInputBorder(),
+                      ),
+                      onChanged: (_) {
+                        if (customVerifierError != null) {
+                          setDialogState(() => customVerifierError = null);
+                        }
+                      },
+                    ),
+                  ],
+                  SwitchListTile(
+                    contentPadding: EdgeInsets.zero,
+                    title: const Text('长期有效'),
+                    subtitle: const Text('验证码不过期，适合长期打印固定二维码'),
+                    value: verifierNeverExpires,
+                    onChanged: (value) =>
+                        setDialogState(() => verifierNeverExpires = value),
+                  ),
+                  if (!verifierNeverExpires) ...[
+                    const SizedBox(height: 8),
+                    TextField(
+                      controller: validDaysController,
+                      keyboardType: TextInputType.number,
+                      decoration: const InputDecoration(
+                        labelText: '验证码有效期（天）',
+                        helperText: '默认 7 天，范围 1-365 天',
+                        border: OutlineInputBorder(),
+                      ),
+                    ),
+                    const SizedBox(height: 8),
+                  ],
+                ],
+                Text(
+                  verifierRequired
+                      ? '动态链接会保持固定。验证码可自定义；未填写时由系统生成，生成码包含字母和数字。'
+                      : '动态链接会展示当前用户待收妥的通联摘要，适合打印固定二维码。',
+                ),
+              ],
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(context).pop(),
+              child: const Text('取消'),
+            ),
+            FilledButton(
+              onPressed: () {
+                final validDays =
+                    int.tryParse(validDaysController.text.trim()) ?? 7;
+                final customCode = customVerifierController.text
+                    .trim()
+                    .toUpperCase()
+                    .replaceAll(RegExp(r'\s+'), '');
+                if (verifierRequired && customVerifierEnabled) {
+                  final validCustomCode =
+                      RegExp(r'^[A-Z0-9]{4,32}$').hasMatch(customCode);
+                  if (!validCustomCode) {
+                    setDialogState(() {
+                      customVerifierError = '请输入 4-32 位英文字母或数字';
+                    });
+                    return;
+                  }
+                }
+                Navigator.of(context).pop(
+                  _DynamicQslOptions(
+                    verifierRequired: verifierRequired,
+                    verifierValidDays: validDays.clamp(1, 365),
+                    verifierNeverExpires:
+                        verifierRequired && verifierNeverExpires,
+                    verifierCode: verifierRequired && customVerifierEnabled
+                        ? customCode
+                        : null,
+                  ),
+                );
+              },
               child: const Text('生成'),
             ),
           ],
         ),
       ),
     );
+    validDaysController.dispose();
+    customVerifierController.dispose();
     if (result == null) return;
 
     try {
       final link = await _qsoManagementService.upsertDynamicQslLink(
-        verifierRequired: result,
+        verifierRequired: result.verifierRequired,
+        verifierValidDays: result.verifierValidDays,
+        verifierNeverExpires: result.verifierNeverExpires,
+        verifierCode: result.verifierCode,
       );
       if (!mounted) return;
-      _showQslLinkDialog('动态 QSL 链接', link);
+      _showQslLinkDialog('动态 QSL 链接', link, linkType: 'dynamic');
     } catch (error) {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
@@ -446,39 +849,91 @@ class _RadioLogPageState extends State<RadioLogPage> {
 
   Future<void> _openQsoActions(QsoLog log) async {
     final scheme = Theme.of(context).colorScheme;
+    final qslAlreadyReceived = _isQslReceivedStatus(log.qslStatus);
+    final qsoAlreadyConfirmed = _isQsoConfirmedStatus(log.qsoConfirmStatus);
     final action = await showModalBottomSheet<String>(
       context: context,
       showDragHandle: true,
-      builder: (context) => SafeArea(
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            ListTile(
-              leading: const Icon(Icons.edit),
-              title: const Text('编辑通联'),
-              subtitle: const Text('修改呼号、日期、频率、模式和信号报告'),
-              onTap: () => Navigator.of(context).pop('edit'),
+      isScrollControlled: true,
+      builder: (context) {
+        final mediaQuery = MediaQuery.of(context);
+        return SafeArea(
+          child: ConstrainedBox(
+            constraints: BoxConstraints(
+              maxHeight: mediaQuery.size.height * 0.72,
             ),
-            ListTile(
-              leading: const Icon(Icons.qr_code_2),
-              title: const Text('生成静态 QSL 收妥二维码'),
-              subtitle: const Text('每条通联一个独立链接'),
-              onTap: () => Navigator.of(context).pop('static_qsl'),
+            child: ListView(
+              shrinkWrap: true,
+              padding: EdgeInsets.only(
+                bottom: 12 + mediaQuery.viewInsets.bottom,
+              ),
+              children: [
+                ListTile(
+                  leading: const Icon(Icons.edit),
+                  title: const Text('编辑通联'),
+                  subtitle: const Text('修改呼号、日期、频率、模式和信号报告'),
+                  onTap: () => Navigator.of(context).pop('edit'),
+                ),
+                ListTile(
+                  leading: const Icon(Icons.qr_code_2),
+                  title: const Text('生成静态 QSL 收妥二维码'),
+                  subtitle: Text(
+                    qslAlreadyReceived ? '该通联 QSL 已收妥，不能重复生成' : '每条通联一个独立链接',
+                  ),
+                  enabled: !qslAlreadyReceived,
+                  onTap: qslAlreadyReceived
+                      ? null
+                      : () => Navigator.of(context).pop('static_qsl'),
+                ),
+                ListTile(
+                  leading: const Icon(Icons.verified_outlined),
+                  title: const Text('确认 QSO 通联'),
+                  subtitle: Text(
+                    qsoAlreadyConfirmed ? '该通联 QSO 已确认' : '平台互认或生成对方确认链接',
+                  ),
+                  enabled: !qsoAlreadyConfirmed,
+                  onTap: qsoAlreadyConfirmed
+                      ? null
+                      : () => Navigator.of(context).pop('confirm_qso'),
+                ),
+                ListTile(
+                  leading: const Icon(Icons.task_alt),
+                  title: const Text('手动确认 QSO'),
+                  subtitle: Text(
+                    qsoAlreadyConfirmed ? '该通联 QSO 已确认' : '仅更新本条日志，不通知对方',
+                  ),
+                  enabled: !qsoAlreadyConfirmed,
+                  onTap: qsoAlreadyConfirmed
+                      ? null
+                      : () => Navigator.of(context).pop('manual_confirm_qso'),
+                ),
+                ListTile(
+                  leading: const Icon(Icons.mark_email_read_outlined),
+                  title: const Text('手动标记 QSL 已收妥'),
+                  subtitle: Text(
+                    qslAlreadyReceived ? '该通联 QSL 已收妥' : '仅更新本条日志，不生成二维码',
+                  ),
+                  enabled: !qslAlreadyReceived,
+                  onTap: qslAlreadyReceived
+                      ? null
+                      : () => Navigator.of(context).pop('manual_receive_qsl'),
+                ),
+                ListTile(
+                  leading: const Icon(Icons.copy),
+                  title: const Text('复制通联摘要'),
+                  onTap: () => Navigator.of(context).pop('copy'),
+                ),
+                ListTile(
+                  leading: Icon(Icons.delete_outline, color: scheme.error),
+                  title: Text('删除通联', style: TextStyle(color: scheme.error)),
+                  subtitle: const Text('从本地删除，并尝试同步删除远端记录'),
+                  onTap: () => Navigator.of(context).pop('delete'),
+                ),
+              ],
             ),
-            ListTile(
-              leading: const Icon(Icons.copy),
-              title: const Text('复制通联摘要'),
-              onTap: () => Navigator.of(context).pop('copy'),
-            ),
-            ListTile(
-              leading: Icon(Icons.delete_outline, color: scheme.error),
-              title: Text('删除通联', style: TextStyle(color: scheme.error)),
-              subtitle: const Text('从本地删除，并尝试同步删除远端记录'),
-              onTap: () => Navigator.of(context).pop('delete'),
-            ),
-          ],
-        ),
-      ),
+          ),
+        );
+      },
     );
     if (action == 'copy') {
       final text =
@@ -495,9 +950,208 @@ class _RadioLogPageState extends State<RadioLogPage> {
     if (action == 'static_qsl') {
       await _createStaticQslLink(log);
     }
+    if (action == 'confirm_qso') {
+      await _confirmQsoLog(log);
+    }
+    if (action == 'manual_confirm_qso') {
+      await _manuallyConfirmQsoLog(log);
+    }
+    if (action == 'manual_receive_qsl') {
+      await _manuallyReceiveQsl(log);
+    }
     if (action == 'delete') {
       await _deleteQsoLog(log);
     }
+  }
+
+  Future<void> _confirmQsoLog(QsoLog log) async {
+    final messenger = ScaffoldMessenger.of(context);
+    final counterpartyEmail = await _askQsoCounterpartyEmail(log);
+    if (counterpartyEmail == null) return;
+    try {
+      final cloudLog = await _ensureCloudQsoForQsl(log);
+      final smtpSettings = await _endpointSettingsService.getSmtpSettings();
+      final result = await _qsoManagementService.confirmQsoLog(
+        cloudLog.id,
+        confirmerCallsign: cloudLog.callsign,
+        counterpartyEmail: counterpartyEmail,
+        smtpSettings: smtpSettings,
+      );
+      final updated = result.qso;
+      await _upsertQsoLogInState(updated);
+      if (!mounted) return;
+      if (result.link != null) {
+        _showQsoConfirmLinkDialog(result);
+      } else {
+        messenger.showSnackBar(
+          SnackBar(content: Text(result.message)),
+        );
+      }
+    } catch (error) {
+      if (!mounted) return;
+      messenger.showSnackBar(
+        SnackBar(content: Text('QSO 确认失败：${_friendlyLoadError(error)}')),
+      );
+    }
+  }
+
+  Future<void> _upsertQsoLogInState(QsoLog updated) async {
+    await _databaseService.insertQsoLog(updated);
+    if (!mounted) return;
+    setState(() {
+      var replaced = false;
+      final next = [
+        for (final item in _qsoLogs) item.id == updated.id ? updated : item,
+      ];
+      for (final item in _qsoLogs) {
+        if (item.id == updated.id) {
+          replaced = true;
+          break;
+        }
+      }
+      if (!replaced) next.add(updated);
+      _qsoLogs = next..sort((a, b) => b.dateTime.compareTo(a.dateTime));
+    });
+  }
+
+  Future<void> _manuallyConfirmQsoLog(QsoLog log) async {
+    final note = await _askManualConfirmNote(
+      title: '手动确认 QSO',
+      message: '这会直接将 ${log.callsign} 的 QSO 状态标记为已确认，不通知对方，也不校验对方日志。',
+    );
+    if (note == null) return;
+    if (!mounted) return;
+    try {
+      final cloudLog = await _ensureCloudQsoForQsl(
+        log,
+        syncingMessage: '正在同步当前通联以手动确认 QSO...',
+      );
+      final updated = await _qsoManagementService.manuallyConfirmQsoLog(
+        cloudLog.id,
+        note: note,
+      );
+      await _upsertQsoLogInState(updated);
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('已手动确认 ${updated.callsign} 的 QSO')),
+      );
+    } catch (error) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('QSO 手动确认失败：${_friendlyLoadError(error)}')),
+      );
+    }
+  }
+
+  Future<void> _manuallyReceiveQsl(QsoLog log) async {
+    final note = await _askManualConfirmNote(
+      title: '手动标记 QSL 已收妥',
+      message: '这会直接将 ${log.callsign} 的 QSL 状态标记为已收妥，不生成二维码，也不要求对方登记。',
+    );
+    if (note == null) return;
+    if (!mounted) return;
+    try {
+      final cloudLog = await _ensureCloudQsoForQsl(
+        log,
+        syncingMessage: '正在同步当前通联以手动标记 QSL...',
+      );
+      final updated = await _qsoManagementService.manuallyReceiveQsl(
+        cloudLog.id,
+        note: note,
+      );
+      await _upsertQsoLogInState(updated);
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('已手动标记 ${updated.callsign} 的 QSL 已收妥')),
+      );
+    } catch (error) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('QSL 手动收妥失败：${_friendlyLoadError(error)}')),
+      );
+    }
+  }
+
+  Future<String?> _askManualConfirmNote({
+    required String title,
+    required String message,
+  }) async {
+    final controller = TextEditingController();
+    final result = await showDialog<String>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: Text(title),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(message),
+            const SizedBox(height: 12),
+            TextField(
+              controller: controller,
+              minLines: 2,
+              maxLines: 4,
+              decoration: const InputDecoration(
+                labelText: '备注（可选）',
+                border: OutlineInputBorder(),
+              ),
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(null),
+            child: const Text('取消'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.of(context).pop(controller.text.trim()),
+            child: const Text('确认'),
+          ),
+        ],
+      ),
+    );
+    controller.dispose();
+    return result;
+  }
+
+  Future<String?> _askQsoCounterpartyEmail(QsoLog log) async {
+    final controller = TextEditingController();
+    final result = await showDialog<String>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('确认 QSO 通联'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              '如果 ${log.callsign} 不是 Beacon 平台用户，将生成公开确认链接。填写邮箱且已配置 SMTP 时会自动发送。',
+            ),
+            const SizedBox(height: 12),
+            TextField(
+              controller: controller,
+              keyboardType: TextInputType.emailAddress,
+              decoration: const InputDecoration(
+                labelText: '对方邮箱（可选）',
+                border: OutlineInputBorder(),
+              ),
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(null),
+            child: const Text('取消'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.of(context).pop(controller.text.trim()),
+            child: const Text('继续'),
+          ),
+        ],
+      ),
+    );
+    controller.dispose();
+    return result;
   }
 
   Future<void> _deleteQsoLog(QsoLog log) async {
@@ -563,8 +1217,24 @@ class _RadioLogPageState extends State<RadioLogPage> {
 
   Future<void> _createStaticQslLink(QsoLog log) async {
     final messenger = ScaffoldMessenger.of(context);
+    if (_isQslReceivedStatus(log.qslStatus)) {
+      messenger.showSnackBar(
+        const SnackBar(content: Text('该通联 QSL 已收妥，不能重复生成静态二维码')),
+      );
+      return;
+    }
     try {
-      final cloudLog = await _ensureCloudQsoForQsl(log);
+      final cloudLog = await _ensureCloudQsoForQsl(
+        log,
+        syncingMessage: '正在同步当前通联以确认 QSO...',
+      );
+      if (_isQslReceivedStatus(cloudLog.qslStatus)) {
+        messenger.hideCurrentSnackBar();
+        messenger.showSnackBar(
+          const SnackBar(content: Text('该通联 QSL 已收妥，不能重复生成静态二维码')),
+        );
+        return;
+      }
       final link = await _qsoManagementService.createStaticQslLink(cloudLog.id);
       final qslStatus = link.qslStatus?.trim();
       if (qslStatus != null && qslStatus.isNotEmpty) {
@@ -584,7 +1254,11 @@ class _RadioLogPageState extends State<RadioLogPage> {
       }
       if (!mounted) return;
       messenger.hideCurrentSnackBar();
-      _showQslLinkDialog('${cloudLog.callsign} QSL 链接', link);
+      _showQslLinkDialog(
+        '${cloudLog.callsign} QSL 链接',
+        link,
+        linkType: 'static',
+      );
     } catch (error) {
       if (!mounted) return;
       messenger.hideCurrentSnackBar();
@@ -594,7 +1268,10 @@ class _RadioLogPageState extends State<RadioLogPage> {
     }
   }
 
-  Future<QsoLog> _ensureCloudQsoForQsl(QsoLog log) async {
+  Future<QsoLog> _ensureCloudQsoForQsl(
+    QsoLog log, {
+    String syncingMessage = '正在同步当前通联以生成二维码...',
+  }) async {
     if (_looksLikeUuid(log.id)) return log;
 
     final missingFields = _qsoMissingRequiredFields(log);
@@ -607,7 +1284,7 @@ class _RadioLogPageState extends State<RadioLogPage> {
     final messenger = ScaffoldMessenger.of(context);
     messenger.hideCurrentSnackBar();
     messenger.showSnackBar(
-      const SnackBar(content: Text('正在同步当前通联以生成二维码...')),
+      SnackBar(content: Text(syncingMessage)),
     );
 
     final summary = await _qsoManagementService.syncLogs([log]);
@@ -659,8 +1336,18 @@ class _RadioLogPageState extends State<RadioLogPage> {
     return _friendlyLoadError(error);
   }
 
-  void _showQslLinkDialog(String title, QslLink link) {
+  void _showQslLinkDialog(
+    String title,
+    QslLink link, {
+    required String linkType,
+  }) {
     final value = link.url.isEmpty ? link.token : link.url;
+    final copyValue = _qslShareText(linkType: linkType, link: link);
+    final copyLabel =
+        link.verifierRequired && link.verifierCode?.trim().isNotEmpty == true
+            ? '复制链接和验证码'
+            : '复制链接';
+    final qrKey = GlobalKey();
     final messenger = ScaffoldMessenger.of(context);
     final navigator = Navigator.of(context, rootNavigator: true);
     showDialog<void>(
@@ -689,19 +1376,46 @@ class _RadioLogPageState extends State<RadioLogPage> {
                   const SizedBox(height: 16),
                   if (link.url.isNotEmpty)
                     Center(
-                      child: QrImageView(
-                        data: link.url,
-                        version: QrVersions.auto,
-                        size: 220,
-                        backgroundColor: Colors.white,
+                      child: GestureDetector(
+                        onLongPress: () => _saveQrCodeImage(
+                          qrKey,
+                          messenger,
+                          link,
+                        ),
+                        child: RepaintBoundary(
+                          key: qrKey,
+                          child: Container(
+                            color: Colors.white,
+                            child: QrImageView(
+                              data: link.url,
+                              version: QrVersions.auto,
+                              size: 220,
+                              backgroundColor: Colors.white,
+                            ),
+                          ),
+                        ),
                       ),
                     ),
+                  if (link.url.isNotEmpty) ...[
+                    const SizedBox(height: 6),
+                    Center(
+                      child: Text(
+                        '长按二维码保存图片',
+                        style: TextStyle(
+                          color: scheme.onSurfaceVariant,
+                          fontSize: 12,
+                          fontWeight: FontWeight.w600,
+                        ),
+                      ),
+                    ),
+                  ],
                   const SizedBox(height: 12),
                   InkWell(
                     borderRadius: BorderRadius.circular(10),
                     onTap: () => _copyText(
                       messenger,
-                      value,
+                      copyValue,
+                      message: '已复制 QSL 确认信息',
                       closeDialog: false,
                     ),
                     child: Container(
@@ -745,7 +1459,12 @@ class _RadioLogPageState extends State<RadioLogPage> {
                     ),
                     if (link.verifierExpiresAt != null)
                       Text(
-                        '${_timeFromDate(link.verifierExpiresAt!.toLocal())} 前有效',
+                        '${_formatDateTime(link.verifierExpiresAt!.toLocal())} 前有效',
+                        style: TextStyle(color: scheme.onSurfaceVariant),
+                      )
+                    else
+                      Text(
+                        '长期有效',
                         style: TextStyle(color: scheme.onSurfaceVariant),
                       ),
                   ],
@@ -756,11 +1475,12 @@ class _RadioLogPageState extends State<RadioLogPage> {
                       TextButton.icon(
                         onPressed: () => _copyText(
                           messenger,
-                          value,
+                          copyValue,
+                          message: '已复制 QSL 确认信息',
                           navigator: navigator,
                         ),
                         icon: const Icon(Icons.copy),
-                        label: const Text('复制链接'),
+                        label: Text(copyLabel),
                       ),
                       const SizedBox(width: 8),
                       FilledButton(
@@ -778,11 +1498,92 @@ class _RadioLogPageState extends State<RadioLogPage> {
     );
   }
 
+  void _showQsoConfirmLinkDialog(QsoConfirmResult result) {
+    final link = result.link;
+    if (link == null) return;
+    final value = link.url.isEmpty ? link.token : link.url;
+    final copyValue = '您的友台正通过Beacon业余无线工具箱与您确认QSO通联信息，确认链接:$value。';
+    final messenger = ScaffoldMessenger.of(context);
+    final navigator = Navigator.of(context, rootNavigator: true);
+    showDialog<void>(
+      context: context,
+      builder: (dialogContext) {
+        final scheme = Theme.of(dialogContext).colorScheme;
+        return AlertDialog(
+          title: const Text('QSO 确认链接'),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(result.message),
+              if (result.emailSent) ...[
+                const SizedBox(height: 8),
+                Text(
+                  '已通过 SMTP 发送给对方。',
+                  style: TextStyle(
+                    color: scheme.primary,
+                    fontWeight: FontWeight.w700,
+                  ),
+                ),
+              ],
+              const SizedBox(height: 12),
+              InkWell(
+                borderRadius: BorderRadius.circular(10),
+                onTap: () => _copyText(
+                  messenger,
+                  copyValue,
+                  message: '已复制 QSO 确认信息',
+                  closeDialog: false,
+                ),
+                child: Container(
+                  width: double.infinity,
+                  padding: const EdgeInsets.all(10),
+                  decoration: BoxDecoration(
+                    color:
+                        scheme.surfaceContainerHighest.withValues(alpha: 0.58),
+                    borderRadius: BorderRadius.circular(10),
+                    border: Border.all(color: scheme.outlineVariant),
+                  ),
+                  child: Text(
+                    value,
+                    softWrap: true,
+                    style: TextStyle(
+                      color: scheme.onSurfaceVariant,
+                      fontSize: 13,
+                      height: 1.35,
+                    ),
+                  ),
+                ),
+              ),
+            ],
+          ),
+          actions: [
+            TextButton.icon(
+              onPressed: () => _copyText(
+                messenger,
+                copyValue,
+                message: '已复制 QSO 确认信息',
+                navigator: navigator,
+              ),
+              icon: const Icon(Icons.copy),
+              label: const Text('复制链接'),
+            ),
+            FilledButton(
+              onPressed: () => Navigator.of(dialogContext).pop(),
+              child: const Text('完成'),
+            ),
+          ],
+        );
+      },
+    );
+  }
+
   Future<void> _copyText(
     ScaffoldMessengerState messenger,
     String value, {
     NavigatorState? navigator,
     bool closeDialog = true,
+    String message = '已复制 QSL 链接',
   }) async {
     await Clipboard.setData(ClipboardData(text: value));
     if (!mounted) return;
@@ -791,7 +1592,62 @@ class _RadioLogPageState extends State<RadioLogPage> {
     }
     messenger
       ..hideCurrentSnackBar()
-      ..showSnackBar(const SnackBar(content: Text('已复制 QSL 链接')));
+      ..showSnackBar(SnackBar(content: Text(message)));
+  }
+
+  Future<void> _saveQrCodeImage(
+    GlobalKey qrKey,
+    ScaffoldMessengerState messenger,
+    QslLink link,
+  ) async {
+    try {
+      final context = qrKey.currentContext;
+      final renderObject = context?.findRenderObject();
+      if (renderObject is! RenderRepaintBoundary) {
+        throw const FormatException('二维码尚未渲染完成');
+      }
+
+      final image = await renderObject.toImage(pixelRatio: 3);
+      final byteData = await image.toByteData(format: ui.ImageByteFormat.png);
+      image.dispose();
+      final bytes = byteData?.buffer.asUint8List();
+      if (bytes == null || bytes.isEmpty) {
+        throw const FormatException('二维码图片为空');
+      }
+
+      final directory = await getDownloadsDirectory() ??
+          await getApplicationDocumentsDirectory();
+      final token = link.token.trim().isEmpty
+          ? DateTime.now().millisecondsSinceEpoch.toString()
+          : link.token.trim();
+      final safeToken = token.replaceAll(RegExp(r'[^A-Za-z0-9_-]'), '');
+      final filename =
+          'beacon-qsl-${safeToken.substring(0, safeToken.length.clamp(1, 12))}.png';
+      final file = File('${directory.path}${Platform.pathSeparator}$filename');
+      await file.writeAsBytes(bytes, flush: true);
+      if (!mounted) return;
+      messenger
+        ..hideCurrentSnackBar()
+        ..showSnackBar(SnackBar(content: Text('二维码已保存：${file.path}')));
+    } catch (error) {
+      if (!mounted) return;
+      messenger
+        ..hideCurrentSnackBar()
+        ..showSnackBar(SnackBar(content: Text('保存二维码失败：$error')));
+    }
+  }
+
+  String _qslShareText({
+    required String linkType,
+    required QslLink link,
+  }) {
+    final typeLabel = linkType == 'dynamic' ? '动态' : '静态';
+    final url = link.url.isEmpty ? link.token : link.url;
+    final code = link.verifierCode?.trim();
+    final codeText = link.verifierRequired && code != null && code.isNotEmpty
+        ? '，验证密码$code'
+        : '';
+    return '您的友台正通过Beacon$typeLabel链接业余无线工具箱与您确认QSL收妥信息，确认链接:$url$codeText。';
   }
 
   void _changeMonth(int offset) {
@@ -1653,6 +2509,10 @@ class _QsoLogCard extends StatelessWidget {
         log.notes.trim().isNotEmpty ? '快速解析记录待补全' : '通联记录待补全';
     final accentColor = isIncomplete ? _qsoWarningColor : _qsoColor;
     final modeText = log.mode.trim().isEmpty ? '待补全' : log.mode;
+    final qsoConfirmColor = _qsoConfirmStatusColor(
+      context,
+      log.qsoConfirmStatus,
+    );
     final qslColor = _qslStatusColor(context, log.qslStatus);
     return _TimelineCard(
       accentColor: accentColor,
@@ -1683,6 +2543,7 @@ class _QsoLogCard extends StatelessWidget {
           const SizedBox(height: 8),
           Text(
             [
+              if (log.stationCallsign.isNotEmpty) '本台 ${log.stationCallsign}',
               if (log.country.isNotEmpty) log.country,
               log.band,
               if (log.frequency.isNotEmpty) log.frequency,
@@ -1706,6 +2567,10 @@ class _QsoLogCard extends StatelessWidget {
                 ),
               if (log.grid.isNotEmpty)
                 _Pill(text: log.grid, color: scheme.primary),
+              _Pill(
+                text: _qsoConfirmStatusLabel(log.qsoConfirmStatus),
+                color: qsoConfirmColor,
+              ),
               _Pill(
                 text: _qslStatusLabel(log.qslStatus),
                 color: qslColor,
@@ -1733,6 +2598,18 @@ class _QsoLogCard extends StatelessWidget {
                   ),
                 ),
               ],
+            ),
+          ],
+          if (!isIncomplete && log.notes.startsWith('快速模板：')) ...[
+            const SizedBox(height: 8),
+            Text(
+              log.notes,
+              style: TextStyle(
+                color: scheme.onSurfaceVariant,
+                fontSize: 12,
+                fontWeight: FontWeight.w700,
+                height: 1.35,
+              ),
             ),
           ],
         ],
@@ -2044,13 +2921,294 @@ class _TinyDot extends StatelessWidget {
   }
 }
 
+class _QuickQsoDialogResult {
+  final String text;
+  final QsoQuickTemplate? template;
+
+  const _QuickQsoDialogResult({
+    required this.text,
+    required this.template,
+  });
+}
+
+class _QuickTemplateSummary extends StatelessWidget {
+  final QsoQuickTemplate template;
+
+  const _QuickTemplateSummary({required this.template});
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: scheme.surfaceContainerHighest.withValues(alpha: 0.55),
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: scheme.outlineVariant),
+      ),
+      child: Wrap(
+        spacing: 8,
+        runSpacing: 8,
+        children: [
+          _Pill(text: template.mode, color: scheme.primary),
+          _Pill(text: template.band, color: _qsoColor),
+          if (template.downlinkFrequency.isNotEmpty)
+            _Pill(
+              text: '下行 ${template.downlinkFrequency}',
+              color: _studyColor,
+            ),
+          if (template.uplinkFrequency.isNotEmpty)
+            _Pill(
+              text: '上行 ${template.uplinkFrequency}',
+              color: _mixedColor,
+            ),
+          if (template.satName.isNotEmpty)
+            _Pill(text: template.satName, color: scheme.secondary),
+        ],
+      ),
+    );
+  }
+}
+
+class _QuickTemplateEditorDialog extends StatefulWidget {
+  final QsoQuickTemplate? template;
+
+  const _QuickTemplateEditorDialog({this.template});
+
+  @override
+  State<_QuickTemplateEditorDialog> createState() =>
+      _QuickTemplateEditorDialogState();
+}
+
+class _QuickTemplateEditorDialogState
+    extends State<_QuickTemplateEditorDialog> {
+  final _formKey = GlobalKey<FormState>();
+  final _nameController = TextEditingController();
+  final _uplinkController = TextEditingController();
+  final _downlinkController = TextEditingController();
+  final _satNameController = TextEditingController();
+  String _band = '70cm';
+  String _mode = 'FM';
+  String _propMode = 'SAT';
+
+  @override
+  void initState() {
+    super.initState();
+    final template = widget.template;
+    if (template == null) return;
+    _nameController.text = template.name;
+    _uplinkController.text = template.uplinkFrequency;
+    _downlinkController.text = template.downlinkFrequency;
+    _satNameController.text = template.satName;
+    _band = template.band.isEmpty ? _band : template.band;
+    _mode = template.mode.isEmpty ? _mode : template.mode;
+    _propMode = template.propMode.isEmpty ? _propMode : template.propMode;
+  }
+
+  @override
+  void dispose() {
+    _nameController.dispose();
+    _uplinkController.dispose();
+    _downlinkController.dispose();
+    _satNameController.dispose();
+    super.dispose();
+  }
+
+  void _submit() {
+    if (_formKey.currentState?.validate() != true) return;
+    Navigator.of(context).pop(
+      QsoQuickTemplate(
+        id: widget.template?.id ??
+            DateTime.now().microsecondsSinceEpoch.toString(),
+        name: _nameController.text.trim(),
+        uplinkFrequency: _uplinkController.text.trim(),
+        downlinkFrequency: _downlinkController.text.trim(),
+        mode: _mode,
+        band: _band,
+        satName: _satNameController.text.trim().toUpperCase(),
+        propMode: _propMode,
+      ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      title: Text(widget.template == null ? '新增快速模板' : '编辑快速模板'),
+      content: SizedBox(
+        width: 420,
+        child: Form(
+          key: _formKey,
+          child: SingleChildScrollView(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                TextFormField(
+                  controller: _nameController,
+                  decoration: const InputDecoration(
+                    labelText: '模板名称',
+                    hintText: '例如 SO-50 FM',
+                    border: OutlineInputBorder(),
+                  ),
+                  validator: (value) {
+                    if (value == null || value.trim().isEmpty) {
+                      return '请输入模板名称';
+                    }
+                    return null;
+                  },
+                ),
+                const SizedBox(height: 12),
+                Row(
+                  children: [
+                    Expanded(
+                      child: DropdownButtonFormField<String>(
+                        initialValue: _band,
+                        decoration: const InputDecoration(
+                          labelText: '频段',
+                          border: OutlineInputBorder(),
+                        ),
+                        items: _mergeDropdownValues(
+                          _band,
+                          const [
+                            '160m',
+                            '80m',
+                            '40m',
+                            '30m',
+                            '20m',
+                            '17m',
+                            '15m',
+                            '12m',
+                            '10m',
+                            '6m',
+                            '2m',
+                            '1.25m',
+                            '70cm',
+                            '33cm',
+                            '23cm',
+                          ],
+                        )
+                            .map(
+                              (value) => DropdownMenuItem(
+                                value: value,
+                                child: Text(value),
+                              ),
+                            )
+                            .toList(),
+                        onChanged: (value) =>
+                            setState(() => _band = value ?? _band),
+                      ),
+                    ),
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: DropdownButtonFormField<String>(
+                        initialValue: _mode,
+                        decoration: const InputDecoration(
+                          labelText: '模式',
+                          border: OutlineInputBorder(),
+                        ),
+                        items: _mergeDropdownValues(
+                          _mode,
+                          const ['FM', 'SSB', 'CW', 'FT8', 'RTTY', 'AM'],
+                        )
+                            .map(
+                              (value) => DropdownMenuItem(
+                                value: value,
+                                child: Text(value),
+                              ),
+                            )
+                            .toList(),
+                        onChanged: (value) =>
+                            setState(() => _mode = value ?? _mode),
+                      ),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 12),
+                TextFormField(
+                  controller: _downlinkController,
+                  decoration: const InputDecoration(
+                    labelText: '下行频率',
+                    hintText: '例如 439.795 MHz',
+                    border: OutlineInputBorder(),
+                  ),
+                  keyboardType: TextInputType.number,
+                  validator: (value) {
+                    if (value == null || value.trim().isEmpty) {
+                      return '请输入下行频率';
+                    }
+                    return null;
+                  },
+                ),
+                const SizedBox(height: 12),
+                TextFormField(
+                  controller: _uplinkController,
+                  decoration: const InputDecoration(
+                    labelText: '上行频率',
+                    hintText: '例如 145.850 MHz',
+                    border: OutlineInputBorder(),
+                  ),
+                  keyboardType: TextInputType.number,
+                ),
+                const SizedBox(height: 12),
+                TextFormField(
+                  controller: _satNameController,
+                  textCapitalization: TextCapitalization.characters,
+                  decoration: const InputDecoration(
+                    labelText: '卫星/备注标识',
+                    hintText: '例如 SO-50，可留空',
+                    border: OutlineInputBorder(),
+                  ),
+                ),
+                const SizedBox(height: 12),
+                DropdownButtonFormField<String>(
+                  initialValue: _propMode,
+                  decoration: const InputDecoration(
+                    labelText: '传播方式',
+                    border: OutlineInputBorder(),
+                  ),
+                  items: _mergeDropdownValues(
+                    _propMode,
+                    const ['SAT', 'FM', 'SSB', 'CW', 'FT8'],
+                  )
+                      .map(
+                        (value) => DropdownMenuItem(
+                          value: value,
+                          child: Text(value),
+                        ),
+                      )
+                      .toList(),
+                  onChanged: (value) =>
+                      setState(() => _propMode = value ?? _propMode),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.of(context).pop(),
+          child: const Text('取消'),
+        ),
+        FilledButton(
+          onPressed: _submit,
+          child: const Text('保存模板'),
+        ),
+      ],
+    );
+  }
+}
+
 class _AddQsoSheet extends StatefulWidget {
   final DateTime initialDate;
   final QsoLog? initialLog;
+  final String defaultStationCallsign;
 
   const _AddQsoSheet({
     required this.initialDate,
     this.initialLog,
+    this.defaultStationCallsign = '',
   });
 
   @override
@@ -2059,6 +3217,7 @@ class _AddQsoSheet extends StatefulWidget {
 
 class _AddQsoSheetState extends State<_AddQsoSheet> {
   final _formKey = GlobalKey<FormState>();
+  final _stationCallsignController = TextEditingController();
   final _callsignController = TextEditingController();
   final _countryController = TextEditingController(text: '中国');
   final _frequencyController = TextEditingController(text: '14.074 MHz');
@@ -2074,6 +3233,9 @@ class _AddQsoSheetState extends State<_AddQsoSheet> {
     super.initState();
     final initialLog = widget.initialLog;
     if (initialLog != null) {
+      _stationCallsignController.text = initialLog.stationCallsign.isEmpty
+          ? widget.defaultStationCallsign
+          : initialLog.stationCallsign;
       _callsignController.text = initialLog.callsign;
       _countryController.text = initialLog.country;
       _frequencyController.text = initialLog.frequency;
@@ -2085,6 +3247,7 @@ class _AddQsoSheetState extends State<_AddQsoSheet> {
       _time = initialLog.time;
       return;
     }
+    _stationCallsignController.text = widget.defaultStationCallsign;
     final now = DateTime.now();
     _date = DateTime(
       widget.initialDate.year,
@@ -2096,6 +3259,7 @@ class _AddQsoSheetState extends State<_AddQsoSheet> {
 
   @override
   void dispose() {
+    _stationCallsignController.dispose();
     _callsignController.dispose();
     _countryController.dispose();
     _frequencyController.dispose();
@@ -2133,6 +3297,7 @@ class _AddQsoSheetState extends State<_AddQsoSheet> {
       QsoLog(
         id: initialLog?.id,
         time: _time,
+        stationCallsign: _stationCallsignController.text.trim().toUpperCase(),
         callsign: _callsignController.text.trim().toUpperCase(),
         country: _countryController.text.trim(),
         band: _band,
@@ -2140,10 +3305,10 @@ class _AddQsoSheetState extends State<_AddQsoSheet> {
         frequency: _frequencyController.text.trim(),
         report: _reportController.text.trim(),
         grid: _gridController.text.trim().toUpperCase(),
-        stationCallsign: initialLog?.stationCallsign ?? '',
         satName: initialLog?.satName ?? '',
         propMode: initialLog?.propMode ?? '',
         notes: initialLog?.notes ?? '',
+        qsoConfirmStatus: initialLog?.qsoConfirmStatus ?? 'none',
         qslStatus: initialLog?.qslStatus ?? 'none',
         lotwStatus: initialLog?.lotwStatus ?? 'none',
         cloudlogStatus: initialLog?.cloudlogStatus ?? 'none',
@@ -2195,19 +3360,31 @@ class _AddQsoSheetState extends State<_AddQsoSheet> {
               const SizedBox(height: 4),
               Text(
                 widget.initialLog == null
-                    ? '记录呼号、频率、模式、RST 和网格定位，数据仅保存到本地。'
+                    ? '记录本台呼号、对方呼号、频率、模式、RST 和网格定位，数据仅保存到本地。'
                     : '修改后会更新本地记录，下次同步时上传到 beacon-api。',
                 style: TextStyle(color: scheme.onSurfaceVariant),
               ),
               const SizedBox(height: 18),
               _QsoTextField(
+                controller: _stationCallsignController,
+                label: '本台呼号',
+                hint: '例如 BD8EPN',
+                icon: Icons.cell_tower,
+                validator: (value) {
+                  if (value == null || value.trim().isEmpty) {
+                    return '请输入本台呼号';
+                  }
+                  return null;
+                },
+              ),
+              _QsoTextField(
                 controller: _callsignController,
-                label: '呼号',
+                label: '对方呼号',
                 hint: '例如 BG7ABC',
                 icon: Icons.badge,
                 validator: (value) {
                   if (value == null || value.trim().isEmpty) {
-                    return '请输入呼号';
+                    return '请输入对方呼号';
                   }
                   return null;
                 },
@@ -2447,6 +3624,11 @@ String _formatTime(TimeOfDay time) {
   return '${two(time.hour)}:${two(time.minute)}';
 }
 
+String _formatDateTime(DateTime date) {
+  String two(int value) => value.toString().padLeft(2, '0');
+  return '${date.year}-${two(date.month)}-${two(date.day)} ${two(date.hour)}:${two(date.minute)}';
+}
+
 String _timeFromDate(DateTime date) {
   final local = date.toLocal();
   String two(int value) => value.toString().padLeft(2, '0');
@@ -2460,18 +3642,70 @@ List<String> _mergeDropdownValues(String value, List<String> defaults) {
 
 List<String> _qsoMissingRequiredFields(QsoLog log) {
   final fields = <String>[];
-  if (log.callsign.trim().isEmpty) fields.add('呼号');
-  if (log.band.trim().isEmpty) fields.add('频段');
+  if (log.stationCallsign.trim().isEmpty) fields.add('本台呼号');
+  if (log.callsign.trim().isEmpty) fields.add('对方呼号');
+  if (log.band.trim().isEmpty || log.band.trim().toLowerCase() == 'sat') {
+    fields.add('频段');
+  }
   if (log.mode.trim().isEmpty) fields.add('模式');
   if (log.frequency.trim().isEmpty) fields.add('频率');
   return fields;
 }
 
-String _qslStatusLabel(String status) {
+String _qsoConfirmStatusLabel(String status) {
+  if (_isQsoConfirmedStatus(status)) {
+    return 'QSO 已确认';
+  }
   switch (status.trim().toLowerCase()) {
-    case 'received':
+    case 'pending':
+    case 'requested':
+      return 'QSO 待确认';
+    case 'failed':
+    case 'error':
+      return 'QSO 异常';
+    case 'none':
+    case '':
+      return 'QSO 未确认';
+    default:
+      return 'QSO ${status.trim()}';
+  }
+}
+
+Color _qsoConfirmStatusColor(BuildContext context, String status) {
+  final scheme = Theme.of(context).colorScheme;
+  if (_isQsoConfirmedStatus(status)) {
+    return _qsoColor;
+  }
+  switch (status.trim().toLowerCase()) {
+    case 'pending':
+    case 'requested':
+      return const Color(0xffd0831f);
+    case 'failed':
+    case 'error':
+      return _qsoWarningColor;
+    case 'none':
+    case '':
+      return scheme.onSurfaceVariant;
+    default:
+      return scheme.primary;
+  }
+}
+
+bool _isQsoConfirmedStatus(String status) {
+  switch (status.trim().toLowerCase()) {
     case 'confirmed':
-      return 'QSL 已收妥';
+    case 'matched':
+      return true;
+    default:
+      return false;
+  }
+}
+
+String _qslStatusLabel(String status) {
+  if (_isQslReceivedStatus(status)) {
+    return 'QSL 已收妥';
+  }
+  switch (status.trim().toLowerCase()) {
     case 'pending':
     case 'requested':
     case 'sent':
@@ -2489,10 +3723,10 @@ String _qslStatusLabel(String status) {
 
 Color _qslStatusColor(BuildContext context, String status) {
   final scheme = Theme.of(context).colorScheme;
+  if (_isQslReceivedStatus(status)) {
+    return _qsoColor;
+  }
   switch (status.trim().toLowerCase()) {
-    case 'received':
-    case 'confirmed':
-      return _qsoColor;
     case 'pending':
     case 'requested':
     case 'sent':
@@ -2505,6 +3739,16 @@ Color _qslStatusColor(BuildContext context, String status) {
       return scheme.onSurfaceVariant;
     default:
       return scheme.tertiary;
+  }
+}
+
+bool _isQslReceivedStatus(String status) {
+  switch (status.trim().toLowerCase()) {
+    case 'received':
+    case 'confirmed':
+      return true;
+    default:
+      return false;
   }
 }
 

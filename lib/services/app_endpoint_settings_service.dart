@@ -146,6 +146,38 @@ class AppEndpointSettingsService {
     await _writeOrDelete(AppConstants.llmModelKey, settings.model);
   }
 
+  Future<SmtpSettings> getSmtpSettings() async {
+    final enabled = await _readStorageValue(AppConstants.smtpEnabledKey);
+    final host = await _readStorageValue(AppConstants.smtpHostKey);
+    final port = await _readStorageValue(AppConstants.smtpPortKey);
+    final username = await _readStorageValue(AppConstants.smtpUsernameKey);
+    final password = await _readStorageValue(AppConstants.smtpPasswordKey);
+    final fromEmail = await _readStorageValue(AppConstants.smtpFromEmailKey);
+    final fromName = await _readStorageValue(AppConstants.smtpFromNameKey);
+    return SmtpSettings(
+      enabled: enabled == 'true',
+      host: host?.trim() ?? '',
+      port: int.tryParse(port?.trim() ?? '') ?? 587,
+      username: username?.trim() ?? '',
+      password: password ?? '',
+      fromEmail: fromEmail?.trim() ?? '',
+      fromName: fromName?.trim() ?? 'Beacon',
+    );
+  }
+
+  Future<void> updateSmtpSettings(SmtpSettings settings) async {
+    await _storage.write(
+      key: AppConstants.smtpEnabledKey,
+      value: settings.enabled.toString(),
+    );
+    await _writeOrDelete(AppConstants.smtpHostKey, settings.host);
+    await _writeOrDelete(AppConstants.smtpPortKey, settings.port.toString());
+    await _writeOrDelete(AppConstants.smtpUsernameKey, settings.username);
+    await _writeOrDelete(AppConstants.smtpPasswordKey, settings.password);
+    await _writeOrDelete(AppConstants.smtpFromEmailKey, settings.fromEmail);
+    await _writeOrDelete(AppConstants.smtpFromNameKey, settings.fromName);
+  }
+
   Future<Map<String, dynamic>> testBeaconApiConnection(String url) async {
     final normalized = normalizeBeaconApiBaseUrl(url);
     final dio = Dio(
@@ -338,4 +370,37 @@ class LlmSettings {
   });
 
   bool get isUsable => enabled && baseUrl.isNotEmpty && apiKey.isNotEmpty;
+}
+
+class SmtpSettings {
+  final bool enabled;
+  final String host;
+  final int port;
+  final String username;
+  final String password;
+  final String fromEmail;
+  final String fromName;
+
+  const SmtpSettings({
+    required this.enabled,
+    required this.host,
+    required this.port,
+    required this.username,
+    required this.password,
+    required this.fromEmail,
+    required this.fromName,
+  });
+
+  bool get isUsable => enabled && host.isNotEmpty && fromEmail.isNotEmpty;
+
+  Map<String, dynamic> toJson() {
+    return {
+      'host': host,
+      'port': port,
+      'username': username.isEmpty ? null : username,
+      'password': password.isEmpty ? null : password,
+      'from_email': fromEmail,
+      'from_name': fromName.isEmpty ? null : fromName,
+    };
+  }
 }

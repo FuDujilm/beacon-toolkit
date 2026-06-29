@@ -18,6 +18,7 @@ class LocalDatabaseService {
   LocalDatabaseService._internal();
 
   Database? _database;
+  bool _qsoSchemaChecked = false;
 
   Future<Database> get database async {
     final existing = _database;
@@ -33,7 +34,7 @@ class LocalDatabaseService {
 
     _database = await openDatabase(
       path,
-      version: 7,
+      version: 8,
       onCreate: (db, version) async {
         await db.execute('''
           CREATE TABLE qso_logs (
@@ -52,6 +53,7 @@ class LocalDatabaseService {
             sat_name TEXT NOT NULL DEFAULT '',
             prop_mode TEXT NOT NULL DEFAULT '',
             notes TEXT NOT NULL DEFAULT '',
+            qso_confirm_status TEXT NOT NULL DEFAULT 'none',
             qsl_status TEXT NOT NULL DEFAULT 'none',
             lotw_status TEXT NOT NULL DEFAULT 'none',
             cloudlog_status TEXT NOT NULL DEFAULT 'none',
@@ -109,6 +111,9 @@ class LocalDatabaseService {
           await _createFrequencyAllocationTables(db);
         }
         if (oldVersion < 7) {
+          await _migrateQsoManagementFields(db);
+        }
+        if (oldVersion < 8) {
           await _migrateQsoManagementFields(db);
         }
       },
@@ -258,6 +263,12 @@ class LocalDatabaseService {
     await _addColumnIfMissing(
       db,
       'qso_logs',
+      'qso_confirm_status',
+      "TEXT NOT NULL DEFAULT 'none'",
+    );
+    await _addColumnIfMissing(
+      db,
+      'qso_logs',
       'qsl_status',
       "TEXT NOT NULL DEFAULT 'none'",
     );
@@ -294,6 +305,12 @@ class LocalDatabaseService {
           rst_received = CASE WHEN rst_received = '' THEN report ELSE rst_received END,
           client_updated_at = COALESCE(client_updated_at, created_at)
     ''');
+  }
+
+  Future<void> _ensureQsoSchema(Database db) async {
+    if (_qsoSchemaChecked) return;
+    await _migrateQsoManagementFields(db);
+    _qsoSchemaChecked = true;
   }
 
   Future<String?> getSetting(String key) async {
@@ -627,12 +644,14 @@ class LocalDatabaseService {
 
   Future<List<QsoLog>> getQsoLogs() async {
     final db = await database;
+    await _ensureQsoSchema(db);
     final rows = await db.query('qso_logs', orderBy: 'date_time DESC');
     return rows.map(QsoLog.fromMap).toList();
   }
 
   Future<void> insertQsoLog(QsoLog log) async {
     final db = await database;
+    await _ensureQsoSchema(db);
     await db.insert(
       'qso_logs',
       log.toMap(),
@@ -647,6 +666,7 @@ class LocalDatabaseService {
 
   Future<void> replaceQsoLogs(List<QsoLog> logs) async {
     final db = await database;
+    await _ensureQsoSchema(db);
     await db.transaction((txn) async {
       await txn.delete('qso_logs');
       for (final log in logs) {

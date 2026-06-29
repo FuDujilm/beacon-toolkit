@@ -16,6 +16,7 @@ class QsoLog {
   final String satName;
   final String propMode;
   final String notes;
+  final String qsoConfirmStatus;
   final String qslStatus;
   final String lotwStatus;
   final String cloudlogStatus;
@@ -43,6 +44,7 @@ class QsoLog {
     this.satName = '',
     this.propMode = '',
     this.notes = '',
+    this.qsoConfirmStatus = 'none',
     this.qslStatus = 'none',
     this.lotwStatus = 'none',
     this.cloudlogStatus = 'none',
@@ -79,6 +81,7 @@ class QsoLog {
     String? satName,
     String? propMode,
     String? notes,
+    String? qsoConfirmStatus,
     String? qslStatus,
     String? lotwStatus,
     String? cloudlogStatus,
@@ -106,6 +109,7 @@ class QsoLog {
       satName: satName ?? this.satName,
       propMode: propMode ?? this.propMode,
       notes: notes ?? this.notes,
+      qsoConfirmStatus: qsoConfirmStatus ?? this.qsoConfirmStatus,
       qslStatus: qslStatus ?? this.qslStatus,
       lotwStatus: lotwStatus ?? this.lotwStatus,
       cloudlogStatus: cloudlogStatus ?? this.cloudlogStatus,
@@ -136,6 +140,7 @@ class QsoLog {
       'sat_name': satName,
       'prop_mode': propMode,
       'notes': notes,
+      'qso_confirm_status': qsoConfirmStatus,
       'qsl_status': qslStatus,
       'lotw_status': lotwStatus,
       'cloudlog_status': cloudlogStatus,
@@ -192,6 +197,7 @@ class QsoLog {
       satName: map['sat_name'] as String? ?? '',
       propMode: map['prop_mode'] as String? ?? '',
       notes: map['notes'] as String? ?? '',
+      qsoConfirmStatus: map['qso_confirm_status'] as String? ?? 'none',
       qslStatus: map['qsl_status'] as String? ?? 'none',
       lotwStatus: map['lotw_status'] as String? ?? 'none',
       cloudlogStatus: map['cloudlog_status'] as String? ?? 'none',

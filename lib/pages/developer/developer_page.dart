@@ -19,6 +19,12 @@ class _DeveloperPageState extends State<DeveloperPage> {
   final _llmBaseUrlController = TextEditingController();
   final _llmApiKeyController = TextEditingController();
   final _llmModelController = TextEditingController();
+  final _smtpHostController = TextEditingController();
+  final _smtpPortController = TextEditingController(text: '587');
+  final _smtpUsernameController = TextEditingController();
+  final _smtpPasswordController = TextEditingController();
+  final _smtpFromEmailController = TextEditingController();
+  final _smtpFromNameController = TextEditingController(text: 'Beacon');
   final _endpointSettingsService = const AppEndpointSettingsService();
 
   bool _isLoading = true;
@@ -27,7 +33,9 @@ class _DeveloperPageState extends State<DeveloperPage> {
   bool _isSavingBeaconFrontend = false;
   bool _isSavingTianditu = false;
   bool _isSavingLlm = false;
+  bool _isSavingSmtp = false;
   bool _llmEnabled = false;
+  bool _smtpEnabled = false;
   bool _isTestingExamApi = false;
   bool _isTestingBeaconApi = false;
   Map<String, dynamic>? _examApiTestResult;
@@ -48,6 +56,12 @@ class _DeveloperPageState extends State<DeveloperPage> {
     _llmBaseUrlController.dispose();
     _llmApiKeyController.dispose();
     _llmModelController.dispose();
+    _smtpHostController.dispose();
+    _smtpPortController.dispose();
+    _smtpUsernameController.dispose();
+    _smtpPasswordController.dispose();
+    _smtpFromEmailController.dispose();
+    _smtpFromNameController.dispose();
     super.dispose();
   }
 
@@ -59,9 +73,11 @@ class _DeveloperPageState extends State<DeveloperPage> {
       _endpointSettingsService.getBeaconFrontendBaseUrl(),
       _endpointSettingsService.getTiandituToken(),
       _endpointSettingsService.getLlmSettings(),
+      _endpointSettingsService.getSmtpSettings(),
     ]);
     if (!mounted) return;
     final llmSettings = results[4] as LlmSettings;
+    final smtpSettings = results[5] as SmtpSettings;
     setState(() {
       _examApiUrlController.text = results[0] as String;
       _beaconApiUrlController.text = results[1] as String;
@@ -71,6 +87,13 @@ class _DeveloperPageState extends State<DeveloperPage> {
       _llmBaseUrlController.text = llmSettings.baseUrl;
       _llmApiKeyController.text = llmSettings.apiKey;
       _llmModelController.text = llmSettings.model;
+      _smtpEnabled = smtpSettings.enabled;
+      _smtpHostController.text = smtpSettings.host;
+      _smtpPortController.text = smtpSettings.port.toString();
+      _smtpUsernameController.text = smtpSettings.username;
+      _smtpPasswordController.text = smtpSettings.password;
+      _smtpFromEmailController.text = smtpSettings.fromEmail;
+      _smtpFromNameController.text = smtpSettings.fromName;
       _isLoading = false;
     });
   }
@@ -224,6 +247,40 @@ class _DeveloperPageState extends State<DeveloperPage> {
       _showSnackBar('保存失败: $e', error: true);
     } finally {
       if (mounted) setState(() => _isSavingLlm = false);
+    }
+  }
+
+  Future<void> _saveSmtpSettings() async {
+    setState(() => _isSavingSmtp = true);
+    try {
+      await _endpointSettingsService.updateSmtpSettings(
+        SmtpSettings(
+          enabled: _smtpEnabled,
+          host: _smtpHostController.text,
+          port: int.tryParse(_smtpPortController.text.trim()) ?? 587,
+          username: _smtpUsernameController.text,
+          password: _smtpPasswordController.text,
+          fromEmail: _smtpFromEmailController.text,
+          fromName: _smtpFromNameController.text,
+        ),
+      );
+      final settings = await _endpointSettingsService.getSmtpSettings();
+      if (!mounted) return;
+      setState(() {
+        _smtpEnabled = settings.enabled;
+        _smtpHostController.text = settings.host;
+        _smtpPortController.text = settings.port.toString();
+        _smtpUsernameController.text = settings.username;
+        _smtpPasswordController.text = settings.password;
+        _smtpFromEmailController.text = settings.fromEmail;
+        _smtpFromNameController.text = settings.fromName;
+      });
+      _showSnackBar('SMTP 配置已保存');
+    } catch (e) {
+      if (!mounted) return;
+      _showSnackBar('保存失败: $e', error: true);
+    } finally {
+      if (mounted) setState(() => _isSavingSmtp = false);
     }
   }
 
@@ -447,6 +504,101 @@ class _DeveloperPageState extends State<DeveloperPage> {
                               )
                             : const Icon(Icons.save),
                         label: Text(_isSavingLlm ? '保存中...' : '保存 LLM'),
+                      ),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 16),
+                _SettingsSection(
+                  title: 'SMTP',
+                  icon: Icons.outgoing_mail,
+                  description: '用于向非 Beacon 用户发送 QSO 确认链接。配置仅保存在本机。',
+                  children: [
+                    SwitchListTile(
+                      contentPadding: EdgeInsets.zero,
+                      title: const Text('启用 SMTP 发送'),
+                      subtitle: const Text('未启用或未填写对方邮箱时，只生成确认链接。'),
+                      value: _smtpEnabled,
+                      onChanged: (value) => setState(() {
+                        _smtpEnabled = value;
+                      }),
+                    ),
+                    const SizedBox(height: 8),
+                    TextField(
+                      controller: _smtpHostController,
+                      decoration: const InputDecoration(
+                        labelText: 'SMTP 服务器',
+                        hintText: 'smtp.example.com',
+                        border: OutlineInputBorder(),
+                      ),
+                    ),
+                    const SizedBox(height: 10),
+                    TextField(
+                      controller: _smtpPortController,
+                      decoration: const InputDecoration(
+                        labelText: '端口',
+                        hintText: '587',
+                        border: OutlineInputBorder(),
+                      ),
+                      keyboardType: TextInputType.number,
+                    ),
+                    const SizedBox(height: 10),
+                    TextField(
+                      controller: _smtpUsernameController,
+                      decoration: const InputDecoration(
+                        labelText: '用户名（可选）',
+                        border: OutlineInputBorder(),
+                      ),
+                    ),
+                    const SizedBox(height: 10),
+                    TextField(
+                      controller: _smtpPasswordController,
+                      decoration: const InputDecoration(
+                        labelText: '密码 / 授权码（可选）',
+                        border: OutlineInputBorder(),
+                      ),
+                      obscureText: true,
+                      enableSuggestions: false,
+                      autocorrect: false,
+                    ),
+                    const SizedBox(height: 10),
+                    TextField(
+                      controller: _smtpFromEmailController,
+                      decoration: const InputDecoration(
+                        labelText: '发件邮箱',
+                        hintText: 'me@example.com',
+                        border: OutlineInputBorder(),
+                      ),
+                      keyboardType: TextInputType.emailAddress,
+                    ),
+                    const SizedBox(height: 10),
+                    TextField(
+                      controller: _smtpFromNameController,
+                      decoration: const InputDecoration(
+                        labelText: '发件名称',
+                        hintText: 'Beacon',
+                        border: OutlineInputBorder(),
+                      ),
+                    ),
+                    const SizedBox(height: 8),
+                    const _HelpText(
+                      'SMTP 密码仅保存在本机。发起非平台用户 QSO 确认时，客户端会随本次请求发送给 beacon-api 用于发信。',
+                    ),
+                    const SizedBox(height: 12),
+                    SizedBox(
+                      width: double.infinity,
+                      child: FilledButton.icon(
+                        onPressed: _isSavingSmtp ? null : _saveSmtpSettings,
+                        icon: _isSavingSmtp
+                            ? const SizedBox(
+                                width: 18,
+                                height: 18,
+                                child: CircularProgressIndicator(
+                                  strokeWidth: 2,
+                                ),
+                              )
+                            : const Icon(Icons.save),
+                        label: Text(_isSavingSmtp ? '保存中...' : '保存 SMTP'),
                       ),
                     ),
                   ],

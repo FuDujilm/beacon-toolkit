@@ -43,4 +43,11 @@ class AppConstants {
   static const String llmBaseUrlKey = 'llm_base_url';
   static const String llmApiKeyKey = 'llm_api_key';
   static const String llmModelKey = 'llm_model';
+  static const String smtpEnabledKey = 'smtp_enabled';
+  static const String smtpHostKey = 'smtp_host';
+  static const String smtpPortKey = 'smtp_port';
+  static const String smtpUsernameKey = 'smtp_username';
+  static const String smtpPasswordKey = 'smtp_password';
+  static const String smtpFromEmailKey = 'smtp_from_email';
+  static const String smtpFromNameKey = 'smtp_from_name';
 }

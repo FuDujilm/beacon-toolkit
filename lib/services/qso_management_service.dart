@@ -136,16 +136,83 @@ class QsoManagementService {
     );
   }
 
+  Future<QsoConfirmResult> confirmQsoLog(
+    String qsoId, {
+    String confirmerCallsign = '',
+    String note = '',
+    String counterpartyEmail = '',
+    SmtpSettings? smtpSettings,
+  }) async {
+    final frontendBaseUrl =
+        await _endpointSettingsService.getBeaconFrontendBaseUrl();
+    final apiBaseUrl = await _endpointSettingsService.getBeaconApiBaseUrl();
+    final response = await _apiClient.client.post<Map<String, dynamic>>(
+      await _url('qso-logs/$qsoId/qso-confirmation'),
+      data: {
+        'confirmer_callsign':
+            confirmerCallsign.trim().isEmpty ? null : confirmerCallsign.trim(),
+        'note': note.trim().isEmpty ? null : note.trim(),
+        'counterparty_email':
+            counterpartyEmail.trim().isEmpty ? null : counterpartyEmail.trim(),
+        'base_url': frontendBaseUrl,
+        'api_base_url': apiBaseUrl,
+        if (smtpSettings?.isUsable == true) 'smtp': smtpSettings!.toJson(),
+      },
+      options: Options(headers: const {'Accept': 'application/json'}),
+    );
+    final payload = _data(response.data);
+    if (payload is Map) {
+      return QsoConfirmResult.fromJson(Map<String, dynamic>.from(payload));
+    }
+    throw const FormatException('QSO 确认响应无效');
+  }
+
+  Future<QsoLog> manuallyConfirmQsoLog(String qsoId, {String note = ''}) async {
+    final response = await _apiClient.client.post<Map<String, dynamic>>(
+      await _url('qso-logs/$qsoId/qso-confirmation/manual'),
+      data: {'note': note.trim().isEmpty ? null : note.trim()},
+      options: Options(headers: const {'Accept': 'application/json'}),
+    );
+    final payload = _data(response.data);
+    if (payload is Map) {
+      return QsoLog.fromJson(Map<String, dynamic>.from(payload));
+    }
+    throw const FormatException('QSO 手动确认响应无效');
+  }
+
+  Future<QsoLog> manuallyReceiveQsl(String qsoId, {String note = ''}) async {
+    final response = await _apiClient.client.post<Map<String, dynamic>>(
+      await _url('qso-logs/$qsoId/qsl/manual-receipt'),
+      data: {'note': note.trim().isEmpty ? null : note.trim()},
+      options: Options(headers: const {'Accept': 'application/json'}),
+    );
+    final payload = _data(response.data);
+    if (payload is Map) {
+      return QsoLog.fromJson(Map<String, dynamic>.from(payload));
+    }
+    throw const FormatException('QSL 手动收妥响应无效');
+  }
+
   Future<QslLink> upsertDynamicQslLink({
     required bool verifierRequired,
+    int verifierValidDays = 7,
+    bool verifierNeverExpires = false,
+    String? verifierCode,
   }) async {
     final baseUrl = await _endpointSettingsService.getBeaconApiBaseUrl();
     final frontendBaseUrl =
         await _endpointSettingsService.getBeaconFrontendBaseUrl();
+    final customCode = verifierCode?.trim();
     final response = await _apiClient.client.post<Map<String, dynamic>>(
       await _url('qso-logs/qsl/dynamic-link'),
       data: {
         'verifier_required': verifierRequired,
+        if (verifierRequired) ...{
+          'verifier_valid_days': verifierValidDays.clamp(1, 365),
+          'verifier_never_expires': verifierNeverExpires,
+          if (customCode != null && customCode.isNotEmpty)
+            'verifier_code': customCode,
+        },
         'base_url': frontendBaseUrl,
       },
       options: Options(headers: const {'Accept': 'application/json'}),
@@ -368,6 +435,67 @@ class QslLink {
   });
 }
 
+class QsoConfirmResult {
+  final String status;
+  final String message;
+  final QsoLog qso;
+  final QsoLog? matchedQso;
+  final QsoConfirmLink? link;
+  final bool emailSent;
+
+  const QsoConfirmResult({
+    required this.status,
+    required this.message,
+    required this.qso,
+    this.matchedQso,
+    this.link,
+    this.emailSent = false,
+  });
+
+  factory QsoConfirmResult.fromJson(Map<String, dynamic> json) {
+    final qso = json['qso'];
+    if (qso is! Map) {
+      throw const FormatException('QSO 确认响应缺少通联记录');
+    }
+    final matched = json['matched_qso'] ?? json['matchedQso'];
+    final link = json['link'];
+    return QsoConfirmResult(
+      status: json['status']?.toString() ?? 'unknown',
+      message: json['message']?.toString() ?? '',
+      qso: QsoLog.fromJson(Map<String, dynamic>.from(qso)),
+      matchedQso: matched is Map
+          ? QsoLog.fromJson(Map<String, dynamic>.from(matched))
+          : null,
+      link: link is Map
+          ? QsoConfirmLink.fromJson(Map<String, dynamic>.from(link))
+          : null,
+      emailSent: json['email_sent'] == true || json['emailSent'] == true,
+    );
+  }
+}
+
+class QsoConfirmLink {
+  final String token;
+  final String url;
+  final DateTime? expiresAt;
+
+  const QsoConfirmLink({
+    required this.token,
+    required this.url,
+    this.expiresAt,
+  });
+
+  factory QsoConfirmLink.fromJson(Map<String, dynamic> json) {
+    return QsoConfirmLink(
+      token: json['token']?.toString() ?? '',
+      url: json['url']?.toString() ?? '',
+      expiresAt: DateTime.tryParse(
+        json['expires_at']?.toString() ?? json['expiresAt']?.toString() ?? '',
+      ),
+    );
+  }
+}
+
 class QslPublicPageData {
   final String linkType;
   final bool verifierRequired;
@@ -403,21 +531,27 @@ class QslPublicQsoItem {
   final String id;
   final DateTime? dateTime;
   final String callsign;
+  final String stationCallsign;
   final String band;
   final String mode;
   final String frequency;
   final String satName;
   final String propMode;
+  final String qsoConfirmStatus;
+  final String qslStatus;
 
   const QslPublicQsoItem({
     required this.id,
     required this.dateTime,
     required this.callsign,
+    required this.stationCallsign,
     required this.band,
     required this.mode,
     required this.frequency,
     required this.satName,
     required this.propMode,
+    required this.qsoConfirmStatus,
+    required this.qslStatus,
   });
 
   factory QslPublicQsoItem.fromJson(Map<String, dynamic> json) {
@@ -425,6 +559,9 @@ class QslPublicQsoItem {
       id: json['id']?.toString() ?? '',
       dateTime: DateTime.tryParse(json['date_time']?.toString() ?? ''),
       callsign: json['callsign']?.toString() ?? '',
+      stationCallsign: json['station_callsign']?.toString() ??
+          json['stationCallsign']?.toString() ??
+          '',
       band: json['band']?.toString() ?? '',
       mode: json['mode']?.toString() ?? '',
       frequency: json['frequency']?.toString() ?? '',
@@ -432,6 +569,12 @@ class QslPublicQsoItem {
           json['sat_name']?.toString() ?? json['satName']?.toString() ?? '',
       propMode:
           json['prop_mode']?.toString() ?? json['propMode']?.toString() ?? '',
+      qsoConfirmStatus: json['qso_confirm_status']?.toString() ??
+          json['qsoConfirmStatus']?.toString() ??
+          'none',
+      qslStatus: json['qsl_status']?.toString() ??
+          json['qslStatus']?.toString() ??
+          'none',
     );
   }
 }

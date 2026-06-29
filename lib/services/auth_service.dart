@@ -8,10 +8,13 @@ import 'package:flutter_web_auth_2/flutter_web_auth_2.dart';
 import 'package:http/http.dart' as http;
 import '../core/api_client.dart';
 import '../core/constants.dart';
+import 'app_endpoint_settings_service.dart';
 
 class AuthService {
   final ApiClient _apiClient = ApiClient();
   final FlutterSecureStorage _storage = const FlutterSecureStorage();
+  final AppEndpointSettingsService _endpointSettingsService =
+      const AppEndpointSettingsService();
 
   // Expose API URL configuration
   Future<void> updateApiUrl(String url) async {
@@ -25,15 +28,6 @@ class AuthService {
   Future<Map<String, dynamic>> checkConnectivity() async {
     return await _apiClient.testConnection();
   }
-
-  // OpenOIDC configuration
-  static const String _oauthBaseUrl = AppConstants.oauthBaseUrl;
-  static const String _clientId = AppConstants.oauthClientId;
-
-  // OIDC standard endpoints
-  static String get _authorizeEndpoint => '$_oauthBaseUrl/oauth2/authorize';
-  static String get _tokenEndpoint => '$_oauthBaseUrl/oauth2/token';
-  static String get _userinfoEndpoint => '$_oauthBaseUrl/oauth2/userinfo';
 
   /// Desktop (Linux/Windows/macOS) uses an http://localhost callback with
   /// the system browser; mobile uses a custom URL scheme deep link.
@@ -97,15 +91,21 @@ class AuthService {
   /// Public mobile client — no client secret. PKCE protects the code exchange.
   Future<Map<String, dynamic>> loginWithOAuth() async {
     try {
+      final oidcSettings = await _endpointSettingsService.getOpenOidcSettings();
+      final oauthBaseUrl = oidcSettings.baseUrl;
+      final clientId = oidcSettings.clientId;
+      final authorizeEndpoint = '$oauthBaseUrl/oauth2/authorize';
+      final tokenEndpoint = '$oauthBaseUrl/oauth2/token';
+
       // 1. Generate PKCE code_verifier and code_challenge (S256)
       final codeVerifier = _generateCodeVerifier();
       final codeChallenge = _generateCodeChallenge(codeVerifier);
       final state = _generateRandomString(32);
 
       // 2. Build authorization URL
-      final authUrl = Uri.parse(_authorizeEndpoint).replace(queryParameters: {
+      final authUrl = Uri.parse(authorizeEndpoint).replace(queryParameters: {
         'response_type': 'code',
-        'client_id': _clientId,
+        'client_id': clientId,
         'redirect_uri': _redirectUri,
         'scope': 'openid profile email',
         'state': state,
@@ -144,11 +144,11 @@ class AuthService {
 
       // 5. Exchange code for tokens (with PKCE verifier)
       final tokenResponse = await http.post(
-        Uri.parse(_tokenEndpoint),
+        Uri.parse(tokenEndpoint),
         headers: {'Content-Type': 'application/x-www-form-urlencoded'},
         body: {
           'grant_type': 'authorization_code',
-          'client_id': _clientId,
+          'client_id': clientId,
           'code': code,
           'redirect_uri': _redirectUri,
           'code_verifier': codeVerifier,
@@ -276,9 +276,11 @@ class AuthService {
 
   Future<Map<String, dynamic>> _fetchUserInfo(String accessToken) async {
     try {
+      final oidcSettings = await _endpointSettingsService.getOpenOidcSettings();
+      final oauthBaseUrl = oidcSettings.baseUrl;
       final endpoints = [
-        _userinfoEndpoint,
-        '$_oauthBaseUrl/api/v1/me',
+        '$oauthBaseUrl/oauth2/userinfo',
+        '$oauthBaseUrl/api/v1/me',
       ];
       for (final endpoint in endpoints) {
         final response = await http.get(

@@ -78,6 +78,74 @@ class AppEndpointSettingsService {
     );
   }
 
+  Future<OpenOidcSettings> getOpenOidcSettings() async {
+    final baseUrl = await _readStorageValue(AppConstants.oauthBaseUrlKey);
+    final clientId = await _readStorageValue(AppConstants.oauthClientIdKey);
+    return OpenOidcSettings(
+      baseUrl: normalizeOpenOidcBaseUrl(
+        baseUrl == null || baseUrl.trim().isEmpty
+            ? AppConstants.oauthBaseUrl
+            : baseUrl,
+      ),
+      clientId: clientId?.trim().isNotEmpty == true
+          ? clientId!.trim()
+          : AppConstants.oauthClientId,
+    );
+  }
+
+  Future<void> updateOpenOidcSettings(OpenOidcSettings settings) async {
+    await _writeOrDelete(
+      AppConstants.oauthBaseUrlKey,
+      normalizeOpenOidcBaseUrl(settings.baseUrl),
+    );
+    await _writeOrDelete(AppConstants.oauthClientIdKey, settings.clientId);
+  }
+
+  Future<void> resetOpenOidcSettings() async {
+    await _storage.delete(key: AppConstants.oauthBaseUrlKey);
+    await _storage.delete(key: AppConstants.oauthClientIdKey);
+  }
+
+  Future<Map<String, dynamic>> testOpenOidcConnection(String url) async {
+    final normalized = normalizeOpenOidcBaseUrl(url);
+    final dio = Dio(
+      BaseOptions(
+        connectTimeout: const Duration(seconds: 10),
+        receiveTimeout: const Duration(seconds: 20),
+        headers: const {
+          'Accept': 'application/json',
+        },
+      ),
+    );
+    configureDio(dio);
+
+    final stopwatch = Stopwatch()..start();
+    try {
+      final response = await dio.get<Map<String, dynamic>>(
+        '$normalized/.well-known/openid-configuration',
+      );
+      stopwatch.stop();
+      final data = response.data ?? {};
+      final hasEndpoints = data['authorization_endpoint'] != null &&
+          data['token_endpoint'] != null &&
+          data['userinfo_endpoint'] != null;
+      return {
+        'success': hasEndpoints,
+        'latency': stopwatch.elapsedMilliseconds,
+        'message': hasEndpoints
+            ? 'OIDC Discovery OK (${data['issuer'] ?? normalized})'
+            : 'OIDC Discovery 返回缺少必要端点',
+      };
+    } catch (e) {
+      stopwatch.stop();
+      return {
+        'success': false,
+        'latency': stopwatch.elapsedMilliseconds,
+        'message': _connectionErrorMessage(e),
+      };
+    }
+  }
+
   Future<QrzSettings> getQrzSettings() async {
     final username = await _readStorageValue(AppConstants.qrzUsernameKey);
     final password = await _readStorageValue(AppConstants.qrzPasswordKey);
@@ -255,6 +323,18 @@ class AppEndpointSettingsService {
     return uri.replace(query: '', fragment: '').toString();
   }
 
+  String normalizeOpenOidcBaseUrl(String url) {
+    final trimmed = url.trim();
+    if (trimmed.isEmpty) return AppConstants.oauthBaseUrl;
+    final withoutHash = trimmed.split('#').first;
+    final withoutTrailingSlash = withoutHash.replaceFirst(RegExp(r'/+$'), '');
+    final uri = Uri.tryParse(withoutTrailingSlash);
+    if (uri == null || !uri.hasScheme || uri.host.isEmpty) {
+      return withoutTrailingSlash;
+    }
+    return uri.replace(query: '', fragment: '').toString();
+  }
+
   String _defaultBeaconFrontendBaseUrl() {
     if (kIsWeb) {
       final uri = Uri.base;
@@ -350,6 +430,16 @@ class QrzSettings {
   });
 
   bool get hasCredentials => username.isNotEmpty && password.isNotEmpty;
+}
+
+class OpenOidcSettings {
+  final String baseUrl;
+  final String clientId;
+
+  const OpenOidcSettings({
+    required this.baseUrl,
+    required this.clientId,
+  });
 }
 
 class LlmSettings {

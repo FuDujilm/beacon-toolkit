@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
+import '../../core/constants.dart';
 import '../../services/app_endpoint_settings_service.dart';
 import '../../services/auth_service.dart';
 
@@ -13,6 +14,8 @@ class DeveloperPage extends StatefulWidget {
 
 class _DeveloperPageState extends State<DeveloperPage> {
   final _examApiUrlController = TextEditingController();
+  final _oauthBaseUrlController = TextEditingController();
+  final _oauthClientIdController = TextEditingController();
   final _beaconApiUrlController = TextEditingController();
   final _beaconFrontendUrlController = TextEditingController();
   final _tiandituTokenController = TextEditingController();
@@ -29,6 +32,7 @@ class _DeveloperPageState extends State<DeveloperPage> {
 
   bool _isLoading = true;
   bool _isSavingExamApi = false;
+  bool _isSavingOpenOidc = false;
   bool _isSavingBeaconApi = false;
   bool _isSavingBeaconFrontend = false;
   bool _isSavingTianditu = false;
@@ -37,8 +41,10 @@ class _DeveloperPageState extends State<DeveloperPage> {
   bool _llmEnabled = false;
   bool _smtpEnabled = false;
   bool _isTestingExamApi = false;
+  bool _isTestingOpenOidc = false;
   bool _isTestingBeaconApi = false;
   Map<String, dynamic>? _examApiTestResult;
+  Map<String, dynamic>? _openOidcTestResult;
   Map<String, dynamic>? _beaconApiTestResult;
 
   @override
@@ -50,6 +56,8 @@ class _DeveloperPageState extends State<DeveloperPage> {
   @override
   void dispose() {
     _examApiUrlController.dispose();
+    _oauthBaseUrlController.dispose();
+    _oauthClientIdController.dispose();
     _beaconApiUrlController.dispose();
     _beaconFrontendUrlController.dispose();
     _tiandituTokenController.dispose();
@@ -69,6 +77,7 @@ class _DeveloperPageState extends State<DeveloperPage> {
     final authService = context.read<AuthService>();
     final results = await Future.wait([
       authService.getApiUrl(),
+      _endpointSettingsService.getOpenOidcSettings(),
       _endpointSettingsService.getBeaconApiBaseUrl(),
       _endpointSettingsService.getBeaconFrontendBaseUrl(),
       _endpointSettingsService.getTiandituToken(),
@@ -76,13 +85,16 @@ class _DeveloperPageState extends State<DeveloperPage> {
       _endpointSettingsService.getSmtpSettings(),
     ]);
     if (!mounted) return;
-    final llmSettings = results[4] as LlmSettings;
-    final smtpSettings = results[5] as SmtpSettings;
+    final openOidcSettings = results[1] as OpenOidcSettings;
+    final llmSettings = results[5] as LlmSettings;
+    final smtpSettings = results[6] as SmtpSettings;
     setState(() {
       _examApiUrlController.text = results[0] as String;
-      _beaconApiUrlController.text = results[1] as String;
-      _beaconFrontendUrlController.text = results[2] as String;
-      _tiandituTokenController.text = results[3] as String;
+      _oauthBaseUrlController.text = openOidcSettings.baseUrl;
+      _oauthClientIdController.text = openOidcSettings.clientId;
+      _beaconApiUrlController.text = results[2] as String;
+      _beaconFrontendUrlController.text = results[3] as String;
+      _tiandituTokenController.text = results[4] as String;
       _llmEnabled = llmSettings.enabled;
       _llmBaseUrlController.text = llmSettings.baseUrl;
       _llmApiKeyController.text = llmSettings.apiKey;
@@ -134,6 +146,23 @@ class _DeveloperPageState extends State<DeveloperPage> {
     });
   }
 
+  Future<void> _testOpenOidcConnection() async {
+    setState(() {
+      _isTestingOpenOidc = true;
+      _openOidcTestResult = null;
+    });
+
+    final result = await _endpointSettingsService.testOpenOidcConnection(
+      _oauthBaseUrlController.text.trim(),
+    );
+
+    if (!mounted) return;
+    setState(() {
+      _openOidcTestResult = result;
+      _isTestingOpenOidc = false;
+    });
+  }
+
   Future<void> _saveExamApiUrl() async {
     final nextUrl = _examApiUrlController.text.trim();
     final authService = context.read<AuthService>();
@@ -176,6 +205,58 @@ class _DeveloperPageState extends State<DeveloperPage> {
       _showSnackBar('保存失败: $e', error: true);
     } finally {
       if (mounted) setState(() => _isSavingBeaconApi = false);
+    }
+  }
+
+  Future<void> _saveOpenOidcSettings() async {
+    final nextBaseUrl = _oauthBaseUrlController.text.trim();
+    final nextClientId = _oauthClientIdController.text.trim();
+    if (nextBaseUrl.isEmpty) {
+      _showSnackBar('请输入 OpenOIDC 地址');
+      return;
+    }
+    if (nextClientId.isEmpty) {
+      _showSnackBar('请输入 OAuth Client ID');
+      return;
+    }
+
+    setState(() => _isSavingOpenOidc = true);
+    try {
+      await _endpointSettingsService.updateOpenOidcSettings(
+        OpenOidcSettings(baseUrl: nextBaseUrl, clientId: nextClientId),
+      );
+      final current = await _endpointSettingsService.getOpenOidcSettings();
+      if (!mounted) return;
+      setState(() {
+        _oauthBaseUrlController.text = current.baseUrl;
+        _oauthClientIdController.text = current.clientId;
+      });
+      _showSnackBar('登录配置已保存');
+    } catch (e) {
+      if (!mounted) return;
+      _showSnackBar('保存失败: $e', error: true);
+    } finally {
+      if (mounted) setState(() => _isSavingOpenOidc = false);
+    }
+  }
+
+  Future<void> _resetOpenOidcSettings() async {
+    setState(() => _isSavingOpenOidc = true);
+    try {
+      await _endpointSettingsService.resetOpenOidcSettings();
+      final current = await _endpointSettingsService.getOpenOidcSettings();
+      if (!mounted) return;
+      setState(() {
+        _oauthBaseUrlController.text = current.baseUrl;
+        _oauthClientIdController.text = current.clientId;
+        _openOidcTestResult = null;
+      });
+      _showSnackBar('登录配置已恢复默认');
+    } catch (e) {
+      if (!mounted) return;
+      _showSnackBar('恢复失败: $e', error: true);
+    } finally {
+      if (mounted) setState(() => _isSavingOpenOidc = false);
     }
   }
 
@@ -302,6 +383,69 @@ class _DeveloperPageState extends State<DeveloperPage> {
           : ListView(
               padding: const EdgeInsets.all(16),
               children: [
+                _SettingsSection(
+                  title: '登录 / OpenOIDC',
+                  icon: Icons.login,
+                  description: 'OAuth 登录服务器与公开客户端 ID。客户端不会保存 client secret。',
+                  children: [
+                    TextField(
+                      controller: _oauthBaseUrlController,
+                      decoration: const InputDecoration(
+                        labelText: 'OpenOIDC 地址',
+                        hintText: 'https://id.hamcy.work',
+                        border: OutlineInputBorder(),
+                      ),
+                      keyboardType: TextInputType.url,
+                    ),
+                    const SizedBox(height: 10),
+                    TextField(
+                      controller: _oauthClientIdController,
+                      decoration: const InputDecoration(
+                        labelText: 'OAuth Client ID',
+                        border: OutlineInputBorder(),
+                      ),
+                      enableSuggestions: false,
+                      autocorrect: false,
+                    ),
+                    const SizedBox(height: 8),
+                    const _HelpText(
+                      '生产环境可填写 OpenOIDC 对外地址，例如 https://id.hamcy.work。修改后下次登录生效。',
+                    ),
+                    const SizedBox(height: 10),
+                    const _ReadonlyInfoRow(
+                      label: '移动端回调',
+                      value: AppConstants.oauthMobileRedirectUri,
+                    ),
+                    const SizedBox(height: 6),
+                    const _ReadonlyInfoRow(
+                      label: '桌面端回调',
+                      value: AppConstants.oauthDesktopRedirectUri,
+                    ),
+                    const SizedBox(height: 12),
+                    if (_openOidcTestResult != null)
+                      _ConnectionResultPanel(result: _openOidcTestResult!),
+                    if (_openOidcTestResult != null) const SizedBox(height: 12),
+                    _ActionRow(
+                      testLabel: _isTestingOpenOidc ? '测试中...' : '测试 OpenOIDC',
+                      saveLabel: _isSavingOpenOidc ? '保存中...' : '保存登录配置',
+                      isTesting: _isTestingOpenOidc,
+                      isSaving: _isSavingOpenOidc,
+                      onTest: _testOpenOidcConnection,
+                      onSave: _saveOpenOidcSettings,
+                    ),
+                    const SizedBox(height: 10),
+                    SizedBox(
+                      width: double.infinity,
+                      child: TextButton.icon(
+                        onPressed:
+                            _isSavingOpenOidc ? null : _resetOpenOidcSettings,
+                        icon: const Icon(Icons.restore),
+                        label: const Text('恢复默认登录配置'),
+                      ),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 16),
                 _SettingsSection(
                   title: '考试 API',
                   icon: Icons.assignment,
@@ -678,6 +822,52 @@ class _HelpText extends StatelessWidget {
       style: Theme.of(context).textTheme.bodySmall?.copyWith(
             color: Theme.of(context).colorScheme.onSurfaceVariant,
           ),
+    );
+  }
+}
+
+class _ReadonlyInfoRow extends StatelessWidget {
+  final String label;
+  final String value;
+
+  const _ReadonlyInfoRow({
+    required this.label,
+    required this.value,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 9),
+      decoration: BoxDecoration(
+        color: scheme.surfaceContainerHighest.withValues(alpha: 0.55),
+        borderRadius: BorderRadius.circular(8),
+      ),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          SizedBox(
+            width: 88,
+            child: Text(
+              label,
+              style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                    color: scheme.onSurfaceVariant,
+                    fontWeight: FontWeight.w700,
+                  ),
+            ),
+          ),
+          Expanded(
+            child: SelectableText(
+              value,
+              style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                    fontFamily: 'monospace',
+                  ),
+            ),
+          ),
+        ],
+      ),
     );
   }
 }

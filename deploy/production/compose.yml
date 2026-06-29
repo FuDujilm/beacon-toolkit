@@ -1,0 +1,142 @@
+version: "2.4"
+
+services:
+  proxy:
+    image: nginx:alpine
+    container_name: beacon-proxy
+    restart: unless-stopped
+    depends_on:
+      openoidc:
+        condition: service_started
+      beacon-api:
+        condition: service_started
+    ports:
+      - "${OIDC_FRONTEND_HTTP_PORT:-5000}:80"
+      - "${OIDC_API_HTTP_PORT:-5001}:81"
+      - "${ADMIN_HTTP_PORT:-5003}:82"
+    volumes:
+      - ./nginx/default.conf:/etc/nginx/conf.d/default.conf:ro
+
+  oidc-postgres:
+    image: postgres:16-alpine
+    container_name: beacon-oidc-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${OIDC_DATABASE_NAME}
+      POSTGRES_USER: ${OIDC_DATABASE_USER}
+      POSTGRES_PASSWORD: ${OIDC_DATABASE_PASSWORD}
+    volumes:
+      - oidc_postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  oidc-redis:
+    image: redis:7-alpine
+    container_name: beacon-oidc-redis
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - oidc_redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  openoidc:
+    build:
+      context: ${OPENOIDC_SRC:-./src/OpenOIDC}
+      dockerfile: Dockerfile
+    image: ${OIDC_IMAGE:-local/openoidc:prod}
+    container_name: beacon-openoidc
+    restart: unless-stopped
+    depends_on:
+      oidc-postgres:
+        condition: service_healthy
+      oidc-redis:
+        condition: service_healthy
+    environment:
+      OIDC_SERVER_HOST: "0.0.0.0"
+      OIDC_SERVER_PORT: "8080"
+      OIDC_SERVER_ISSUER: "https://${OIDC_DOMAIN}"
+      OIDC_SERVER_PUBLIC_URL: "https://${OIDC_DOMAIN}"
+      OIDC_DATABASE_DRIVER: "postgres"
+      OIDC_DATABASE_HOST: "oidc-postgres"
+      OIDC_DATABASE_PORT: "5432"
+      OIDC_DATABASE_USER: "${OIDC_DATABASE_USER}"
+      OIDC_DATABASE_PASSWORD: "${OIDC_DATABASE_PASSWORD}"
+      OIDC_DATABASE_NAME: "${OIDC_DATABASE_NAME}"
+      OIDC_DATABASE_SSLMODE: "disable"
+      OIDC_REDIS_HOST: "oidc-redis"
+      OIDC_REDIS_PORT: "6379"
+      OIDC_REDIS_PASSWORD: "${OIDC_REDIS_PASSWORD:-}"
+      OIDC_REDIS_DB: "${OIDC_REDIS_DB:-0}"
+      OIDC_ADMIN_EMAIL: "${OIDC_ADMIN_EMAIL}"
+      OIDC_ADMIN_PASSWORD: "${OIDC_ADMIN_PASSWORD}"
+      OIDC_SECRETS_CLIENT_SECRET_ENCRYPTION_KEY: "${OIDC_SECRETS_CLIENT_SECRET_ENCRYPTION_KEY}"
+      OIDC_SESSION_COOKIE_SECURE: "true"
+      OIDC_LOG_LEVEL: "${OIDC_LOG_LEVEL:-info}"
+      OIDC_LOG_FORMAT: "${OIDC_LOG_FORMAT:-json}"
+    expose:
+      - "8080"
+    volumes:
+      - openidc_data:/app/data
+
+  beacon-postgres:
+    image: postgres:16-alpine
+    container_name: beacon-api-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${BEACON_DATABASE_NAME}
+      POSTGRES_USER: ${BEACON_DATABASE_USER}
+      POSTGRES_PASSWORD: ${BEACON_DATABASE_PASSWORD}
+    volumes:
+      - beacon_postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  beacon-api:
+    build:
+      context: ${BEACON_API_SRC:-./src/beacon-api}
+      dockerfile: Dockerfile
+    image: ${BEACON_API_IMAGE:-local/beacon-api:prod}
+    container_name: beacon-api
+    restart: unless-stopped
+    depends_on:
+      beacon-postgres:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: "postgres://${BEACON_DATABASE_USER}:${BEACON_DATABASE_PASSWORD}@beacon-postgres:5432/${BEACON_DATABASE_NAME}"
+      SERVER_ADDR: "0.0.0.0:3002"
+      JWT_SECRET: "${BEACON_JWT_SECRET}"
+      JWT_ISSUER: "${BEACON_JWT_ISSUER:-beacon-api}"
+      ACCESS_TOKEN_TTL_SECONDS: "${BEACON_ACCESS_TOKEN_TTL_SECONDS:-3600}"
+      REFRESH_TOKEN_TTL_SECONDS: "${BEACON_REFRESH_TOKEN_TTL_SECONDS:-2592000}"
+      OAUTH_BASE_URL: "http://openoidc:8080"
+      OAUTH_FRONTEND_URL: "https://${OIDC_DOMAIN}"
+      OAUTH_CLIENT_ID: "${BEACON_OAUTH_CLIENT_ID}"
+      OAUTH_CLIENT_SECRET: "${BEACON_OAUTH_CLIENT_SECRET}"
+      OAUTH_REDIRECT_URI: "https://${BEACON_DOMAIN}/admin/callback"
+      ADMIN_MIN_SECURITY_LEVEL: "${BEACON_ADMIN_MIN_SECURITY_LEVEL:-3}"
+      CORS_ORIGINS: "https://${BEACON_DOMAIN},https://${OIDC_DOMAIN}"
+      LLM_API_BASE_URL: "${LLM_API_BASE_URL:-https://api.openai.com/v1}"
+      LLM_API_KEY: "${LLM_API_KEY:-}"
+      LLM_MODEL: "${LLM_MODEL:-gpt-4.1-mini}"
+      SATELLITE_SYNC_ENABLED: "${SATELLITE_SYNC_ENABLED:-true}"
+      RUST_LOG: "${BEACON_RUST_LOG:-beacon_api=info,tower_http=info,axum=info}"
+    expose:
+      - "3002"
+    ports:
+      - "${BEACON_API_HTTP_PORT:-5002}:3002"
+
+volumes:
+  oidc_postgres_data:
+  oidc_redis_data:
+  openidc_data:
+  beacon_postgres_data:

@@ -1,0 +1,3 @@
+.env
+backups/
+scripts/__pycache__/

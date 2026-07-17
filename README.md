@@ -79,7 +79,7 @@ lib/core/constants.dart
 | --- | --- | --- |
 | MeowzExam API | 题库、练习、考试、学习记录 | `http://localhost:3001/api/` |
 | beacon-api | 无线电资料、QSO、QSL、频率表、在线工具 | `http://localhost:3002/api/v1/` |
-| OAuth / OpenOIDC | 登录授权与用户信息 | `http://localhost:8080` |
+| OAuth / OpenOIDC | 登录授权与用户信息 | `https://id-api.hamcy.work` |
 
 平台访问本机服务时请注意：
 

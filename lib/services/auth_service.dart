@@ -30,15 +30,24 @@ class AuthService {
   }
 
   /// Desktop (Linux/Windows/macOS) uses an http://localhost callback with
-  /// the system browser; mobile uses a custom URL scheme deep link.
-  static bool get _isDesktop {
+  /// the system browser; Android/iOS always use a custom URL scheme deep link.
+  static bool get _isMobile {
     if (kIsWeb) return false;
+    return Platform.isAndroid || Platform.isIOS;
+  }
+
+  static bool get _isDesktop {
+    if (kIsWeb || _isMobile) return false;
     return Platform.isLinux || Platform.isWindows || Platform.isMacOS;
   }
 
-  static String get _redirectUri => _isDesktop
-      ? AppConstants.oauthDesktopRedirectUri
-      : AppConstants.oauthMobileRedirectUri;
+  static bool get _usesNativeRedirectBridge => _isMobile;
+
+  static String get _redirectUri => _usesNativeRedirectBridge
+      ? AppConstants.oauthMobileHttpsRedirectUri
+      : _isDesktop
+          ? AppConstants.oauthDesktopRedirectUri
+          : AppConstants.oauthMobileRedirectUri;
 
   /// Callback scheme handed to flutter_web_auth_2.
   /// Desktop non-webview mode expects the literal "http://localhost:{port}".
@@ -94,8 +103,7 @@ class AuthService {
       final oidcSettings = await _endpointSettingsService.getOpenOidcSettings();
       final oauthBaseUrl = oidcSettings.baseUrl;
       final clientId = oidcSettings.clientId;
-      final authorizeEndpoint = '$oauthBaseUrl/oauth2/authorize';
-      final tokenEndpoint = '$oauthBaseUrl/oauth2/token';
+      final endpoints = await _loadOpenOidcEndpoints(oauthBaseUrl);
 
       // 1. Generate PKCE code_verifier and code_challenge (S256)
       final codeVerifier = _generateCodeVerifier();
@@ -103,7 +111,8 @@ class AuthService {
       final state = _generateRandomString(32);
 
       // 2. Build authorization URL
-      final authUrl = Uri.parse(authorizeEndpoint).replace(queryParameters: {
+      final authUrl =
+          Uri.parse(endpoints.authorizationEndpoint).replace(queryParameters: {
         'response_type': 'code',
         'client_id': clientId,
         'redirect_uri': _redirectUri,
@@ -112,6 +121,11 @@ class AuthService {
         'code_challenge': codeChallenge,
         'code_challenge_method': 'S256',
       });
+      debugPrint(
+        'OAuth authorize: endpoint=${endpoints.authorizationEndpoint}, '
+        'redirect_uri=$_redirectUri, callback_scheme=$_callbackUrlScheme, '
+        'platform=${_platformLabel()}',
+      );
 
       // 3. Open browser for user authentication.
       //    Desktop: system browser + local http callback (no embedded webview).
@@ -144,7 +158,7 @@ class AuthService {
 
       // 5. Exchange code for tokens (with PKCE verifier)
       final tokenResponse = await http.post(
-        Uri.parse(tokenEndpoint),
+        Uri.parse(endpoints.tokenEndpoint),
         headers: {'Content-Type': 'application/x-www-form-urlencoded'},
         body: {
           'grant_type': 'authorization_code',
@@ -205,6 +219,16 @@ class AuthService {
       debugPrint('OAuth login error: $e');
       rethrow;
     }
+  }
+
+  static String _platformLabel() {
+    if (kIsWeb) return 'web';
+    if (Platform.isAndroid) return 'android';
+    if (Platform.isIOS) return 'ios';
+    if (Platform.isLinux) return 'linux';
+    if (Platform.isWindows) return 'windows';
+    if (Platform.isMacOS) return 'macos';
+    return 'unknown';
   }
 
   Future<void> logout() async {
@@ -278,11 +302,12 @@ class AuthService {
     try {
       final oidcSettings = await _endpointSettingsService.getOpenOidcSettings();
       final oauthBaseUrl = oidcSettings.baseUrl;
-      final endpoints = [
-        '$oauthBaseUrl/oauth2/userinfo',
+      final oidcEndpoints = await _loadOpenOidcEndpoints(oauthBaseUrl);
+      final userInfoEndpoints = [
+        oidcEndpoints.userInfoEndpoint,
         '$oauthBaseUrl/api/v1/me',
       ];
-      for (final endpoint in endpoints) {
+      for (final endpoint in userInfoEndpoints) {
         final response = await http.get(
           Uri.parse(endpoint),
           headers: {'Authorization': 'Bearer $accessToken'},
@@ -297,6 +322,25 @@ class AuthService {
       debugPrint('Failed to fetch OIDC userinfo: $e');
       return {};
     }
+  }
+
+  Future<_OpenOidcEndpoints> _loadOpenOidcEndpoints(String baseUrl) async {
+    final discoveryUrl = Uri.parse('$baseUrl/.well-known/openid-configuration');
+    try {
+      final response = await http
+          .get(discoveryUrl, headers: {'Accept': 'application/json'}).timeout(
+        const Duration(seconds: 8),
+      );
+      if (response.statusCode == 200) {
+        final data = jsonDecode(response.body);
+        if (data is Map<String, dynamic>) {
+          return _OpenOidcEndpoints.fromDiscovery(data, baseUrl);
+        }
+      }
+    } catch (e) {
+      debugPrint('Failed to load OIDC discovery: $e');
+    }
+    return _OpenOidcEndpoints.fallback(baseUrl);
   }
 
   Map<String, dynamic> _normalizeUserInfo(Map<String, dynamic> data) {
@@ -381,5 +425,53 @@ class AuthService {
     } catch (_) {
       return {};
     }
+  }
+}
+
+class _OpenOidcEndpoints {
+  final String authorizationEndpoint;
+  final String tokenEndpoint;
+  final String userInfoEndpoint;
+
+  const _OpenOidcEndpoints({
+    required this.authorizationEndpoint,
+    required this.tokenEndpoint,
+    required this.userInfoEndpoint,
+  });
+
+  factory _OpenOidcEndpoints.fromDiscovery(
+    Map<String, dynamic> data,
+    String fallbackBaseUrl,
+  ) {
+    final fallback = _OpenOidcEndpoints.fallback(fallbackBaseUrl);
+    return _OpenOidcEndpoints(
+      authorizationEndpoint: _stringOrFallback(
+        data['authorization_endpoint'],
+        fallback.authorizationEndpoint,
+      ),
+      tokenEndpoint: _stringOrFallback(
+        data['token_endpoint'],
+        fallback.tokenEndpoint,
+      ),
+      userInfoEndpoint: _stringOrFallback(
+        data['userinfo_endpoint'],
+        fallback.userInfoEndpoint,
+      ),
+    );
+  }
+
+  factory _OpenOidcEndpoints.fallback(String baseUrl) {
+    return _OpenOidcEndpoints(
+      authorizationEndpoint: '$baseUrl/oauth2/authorize',
+      tokenEndpoint: '$baseUrl/oauth2/token',
+      userInfoEndpoint: '$baseUrl/oauth2/userinfo',
+    );
+  }
+
+  static String _stringOrFallback(Object? value, String fallback) {
+    if (value is String && value.trim().isNotEmpty) {
+      return value.trim();
+    }
+    return fallback;
   }
 }

@@ -4,6 +4,7 @@ class RadioProfile {
   final String grid;
   final double? latitude;
   final double? longitude;
+  final double altitudeMeters;
   final String licenseClass;
   final String licenseExpiry;
 
@@ -13,6 +14,7 @@ class RadioProfile {
     required this.grid,
     this.latitude,
     this.longitude,
+    this.altitudeMeters = 0,
     required this.licenseClass,
     required this.licenseExpiry,
   });
@@ -31,6 +33,7 @@ class RadioProfile {
     String? grid,
     double? latitude,
     double? longitude,
+    double? altitudeMeters,
     String? licenseClass,
     String? licenseExpiry,
   }) {
@@ -40,6 +43,7 @@ class RadioProfile {
       grid: grid ?? this.grid,
       latitude: latitude ?? this.latitude,
       longitude: longitude ?? this.longitude,
+      altitudeMeters: altitudeMeters ?? this.altitudeMeters,
       licenseClass: licenseClass ?? this.licenseClass,
       licenseExpiry: licenseExpiry ?? this.licenseExpiry,
     );
@@ -52,6 +56,7 @@ class RadioProfile {
       'grid': grid,
       'latitude': latitude,
       'longitude': longitude,
+      'altitudeMeters': altitudeMeters,
       'licenseClass': licenseClass,
       'licenseExpiry': licenseExpiry,
     };
@@ -64,6 +69,9 @@ class RadioProfile {
       grid: json['grid'] as String? ?? defaults.grid,
       latitude: _doubleFromJson(json['latitude']),
       longitude: _doubleFromJson(json['longitude']),
+      altitudeMeters:
+          _doubleFromJson(json['altitudeMeters'] ?? json['altitude_meters']) ??
+              defaults.altitudeMeters,
       licenseClass: json['licenseClass'] as String? ?? defaults.licenseClass,
       licenseExpiry: json['licenseExpiry'] as String? ?? defaults.licenseExpiry,
     );

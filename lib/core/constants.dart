@@ -12,14 +12,19 @@ class AppConstants {
   static const String beaconApiBaseUrl =
       kIsWeb ? '/api/v1/' : 'http://localhost:3002/api/v1/';
 
-  // ---- OpenOIDC authentication server ----
-  static const String oauthBaseUrl = 'http://localhost:8080';
+  // ---- OpenOIDC authentication API server ----
+  // Production OpenOIDC is split into frontend and API domains. The client
+  // talks to the API domain and follows discovery endpoints from there.
+  static const String oauthBaseUrl = 'https://id-api.hamcy.work';
+  static const String legacyLocalOAuthBaseUrl = 'http://localhost:8080';
   static const String oauthClientId = 'dcb10e397aa21423c695b54967ccdd61';
 
   // Mobile (Android/iOS): custom URL scheme deep-link callback.
   static const String oauthRedirectScheme = 'com.beacontoolkit';
   static const String oauthMobileRedirectUri =
       'com.beacontoolkit://oauth/callback';
+  static const String oauthMobileHttpsRedirectUri =
+      'https://id.hamcy.work/native-callback/beacon-toolkit';
 
   // Desktop (Linux/Windows/macOS): flutter_web_auth_2 with useWebview:false
   // requires an http://localhost callback on a fixed port.

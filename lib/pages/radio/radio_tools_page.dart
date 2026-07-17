@@ -2,13 +2,19 @@ import 'package:flutter/material.dart';
 
 import '../home/calendar_page.dart';
 import '../practice/practice_page.dart';
+import 'antenna_calculator_page.dart';
 import 'beacon_qr_scanner_page.dart';
+import 'calculator_hub_page.dart';
 import 'frequency_table_page.dart';
 import 'callsign_lookup_page.dart';
 import 'grid_map_page.dart';
+import 'other_calculators_page.dart';
 import 'propagation_forecast_page.dart';
+import 'quick_calculators_page.dart';
 import 'radio_placeholder_page.dart';
 import 'satellite_tracker_page.dart';
+import 'timezone_calculator_page.dart';
+import 'unit_converter_page.dart';
 
 class RadioToolsPage extends StatefulWidget {
   const RadioToolsPage({super.key});
@@ -20,7 +26,7 @@ class RadioToolsPage extends StatefulWidget {
 class _RadioToolsPageState extends State<RadioToolsPage> {
   int _categoryIndex = 0;
 
-  final _categories = const ['全部', '计算', '频率', '传播', '日志', '考试', '其他'];
+  final _categories = const ['全部', '计算', '快速计算', '频率', '传播', '日志', '考试', '其他'];
 
   @override
   Widget build(BuildContext context) {
@@ -73,6 +79,17 @@ class _RadioToolsPageState extends State<RadioToolsPage> {
   List<_RadioTool> _tools(BuildContext context) {
     return [
       _RadioTool(
+        '计算目录',
+        '按主题整理的完整无线电计算器入口',
+        Icons.dashboard_customize,
+        const Color(0xff4b89ff),
+        () => Navigator.of(context).push(
+          MaterialPageRoute(builder: (_) => const CalculatorHubPage()),
+        ),
+        category: '计算',
+        isCommon: true,
+      ),
+      _RadioTool(
         '呼号查询',
         '查询电台信息、B站/QRZ 数据',
         Icons.search,
@@ -95,12 +112,45 @@ class _RadioToolsPageState extends State<RadioToolsPage> {
         isCommon: true,
       ),
       _RadioTool(
+        '快速计算',
+        '欧姆定律、功率 dB、SWR 回损快算',
+        Icons.flash_on,
+        const Color(0xfff39b3b),
+        () => Navigator.of(context).push(
+          MaterialPageRoute(builder: (_) => const QuickCalculatorsPage()),
+        ),
+        category: '快速计算',
+        isCommon: true,
+      ),
+      _RadioTool(
         'QTH 定位',
         '经纬度与 Maidenhead 网格定位',
         Icons.public,
         const Color(0xff5b73ff),
         () => Navigator.of(context).push(
           MaterialPageRoute(builder: (_) => const GridMapPage()),
+        ),
+        category: '计算',
+        isCommon: true,
+      ),
+      _RadioTool(
+        '时区计算',
+        '世界时区、双地点时差与白天/黑夜地图',
+        Icons.schedule,
+        const Color(0xff1d9d8f),
+        () => Navigator.of(context).push(
+          MaterialPageRoute(builder: (_) => const TimezoneCalculatorPage()),
+        ),
+        category: '计算',
+        isCommon: false,
+      ),
+      _RadioTool(
+        '单位换算',
+        '电压功率、场强与通量密度换算',
+        Icons.swap_horiz,
+        const Color(0xffde7b42),
+        () => Navigator.of(context).push(
+          MaterialPageRoute(builder: (_) => const UnitConverterPage()),
         ),
         category: '计算',
         isCommon: true,
@@ -128,11 +178,24 @@ class _RadioToolsPageState extends State<RadioToolsPage> {
         isCommon: true,
       ),
       _RadioTool(
+        '其他计算器',
+        '镜像频率等扩展射频计算工具',
+        Icons.calculate,
+        const Color(0xff9b6df5),
+        () => Navigator.of(context).push(
+          MaterialPageRoute(builder: (_) => const OtherCalculatorsPage()),
+        ),
+        category: '计算',
+        isCommon: false,
+      ),
+      _RadioTool(
         '天线计算器',
         '天线长度、增益等计算工具',
         Icons.settings_input_antenna,
         const Color(0xffef9743),
-        () => _openPlaceholder(context, '天线计算器', Icons.settings_input_antenna),
+        () => Navigator.of(context).push(
+          MaterialPageRoute(builder: (_) => const AntennaCalculatorPage()),
+        ),
         category: '计算',
         isCommon: true,
       ),

@@ -147,13 +147,17 @@ class _DeveloperPageState extends State<DeveloperPage> {
   }
 
   Future<void> _testOpenOidcConnection() async {
+    final normalized = _endpointSettingsService.normalizeOpenOidcBaseUrl(
+      _oauthBaseUrlController.text,
+    );
     setState(() {
+      _oauthBaseUrlController.text = normalized;
       _isTestingOpenOidc = true;
       _openOidcTestResult = null;
     });
 
     final result = await _endpointSettingsService.testOpenOidcConnection(
-      _oauthBaseUrlController.text.trim(),
+      normalized,
     );
 
     if (!mounted) return;
@@ -386,13 +390,14 @@ class _DeveloperPageState extends State<DeveloperPage> {
                 _SettingsSection(
                   title: '登录 / OpenOIDC',
                   icon: Icons.login,
-                  description: 'OAuth 登录服务器与公开客户端 ID。客户端不会保存 client secret。',
+                  description:
+                      'OpenOIDC API 地址与公开客户端 ID。客户端不会保存 client secret。',
                   children: [
                     TextField(
                       controller: _oauthBaseUrlController,
                       decoration: const InputDecoration(
-                        labelText: 'OpenOIDC 地址',
-                        hintText: 'https://id.hamcy.work',
+                        labelText: 'OpenOIDC API 地址',
+                        hintText: 'https://id-api.hamcy.work',
                         border: OutlineInputBorder(),
                       ),
                       keyboardType: TextInputType.url,
@@ -409,7 +414,7 @@ class _DeveloperPageState extends State<DeveloperPage> {
                     ),
                     const SizedBox(height: 8),
                     const _HelpText(
-                      '生产环境可填写 OpenOIDC 对外地址，例如 https://id.hamcy.work。修改后下次登录生效。',
+                      '生产环境填写 OpenOIDC API 地址，例如 https://id-api.hamcy.work。修改后下次登录生效。',
                     ),
                     const SizedBox(height: 10),
                     const _ReadonlyInfoRow(

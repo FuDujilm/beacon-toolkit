@@ -25,6 +25,7 @@ class BeaconRadioProfileService {
         'grid': _nullable(profile.grid, RadioProfile.defaults.grid),
         'latitude': profile.latitude,
         'longitude': profile.longitude,
+        'altitude_meters': profile.altitudeMeters,
         'license_class': _nullable(
           profile.licenseClass,
           RadioProfile.defaults.licenseClass,
@@ -60,6 +61,9 @@ class BeaconRadioProfileService {
       grid: _stringField(profile, const ['grid'], RadioProfile.defaults.grid),
       latitude: _doubleField(profile, const ['latitude']),
       longitude: _doubleField(profile, const ['longitude']),
+      altitudeMeters:
+          _doubleField(profile, const ['altitude_meters', 'altitudeMeters']) ??
+              0,
       licenseClass: _stringField(
         profile,
         const ['license_class', 'licenseClass'],

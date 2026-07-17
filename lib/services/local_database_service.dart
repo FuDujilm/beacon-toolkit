@@ -737,6 +737,7 @@ class LocalDatabaseService {
       grid: map['radio_grid'] ?? RadioProfile.defaults.grid,
       latitude: double.tryParse(map['radio_latitude'] ?? ''),
       longitude: double.tryParse(map['radio_longitude'] ?? ''),
+      altitudeMeters: double.tryParse(map['radio_altitude_meters'] ?? '') ?? 0,
       licenseClass:
           map['radio_license_class'] ?? RadioProfile.defaults.licenseClass,
       licenseExpiry:
@@ -753,6 +754,7 @@ class LocalDatabaseService {
         'radio_grid': profile.grid,
         'radio_latitude': profile.latitude?.toString() ?? '',
         'radio_longitude': profile.longitude?.toString() ?? '',
+        'radio_altitude_meters': profile.altitudeMeters.toString(),
         'radio_license_class': profile.licenseClass,
         'radio_license_expiry': profile.licenseExpiry,
       };

@@ -14,7 +14,7 @@
 
 安装依赖：
 
-```bash
+```bash 
 flutter pub get
 ```
 

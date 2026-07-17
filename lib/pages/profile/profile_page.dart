@@ -33,6 +33,7 @@ class _ProfilePageState extends State<ProfilePage> {
   final _gridController = TextEditingController();
   final _latitudeController = TextEditingController();
   final _longitudeController = TextEditingController();
+  final _altitudeController = TextEditingController();
   final _licenseExpiryController = TextEditingController();
 
   bool _isLoading = true;
@@ -60,6 +61,7 @@ class _ProfilePageState extends State<ProfilePage> {
     _gridController.dispose();
     _latitudeController.dispose();
     _longitudeController.dispose();
+    _altitudeController.dispose();
     _licenseExpiryController.dispose();
     super.dispose();
   }
@@ -106,6 +108,7 @@ class _ProfilePageState extends State<ProfilePage> {
       _longitudeController.text = radioProfile.longitude == null
           ? ''
           : _formatCoordinate(radioProfile.longitude!);
+      _altitudeController.text = _formatAltitude(radioProfile.altitudeMeters);
       _licenseClass = radioProfile.licenseClass;
       _licenseExpiryController.text =
           radioProfile.licenseExpiry == RadioProfile.defaults.licenseExpiry
@@ -157,6 +160,7 @@ class _ProfilePageState extends State<ProfilePage> {
           max: 180,
           label: '经度',
         ),
+        altitudeMeters: _parseAltitude(_altitudeController.text),
         licenseClass: _licenseClass,
         licenseExpiry: _licenseExpiryController.text.trim().isEmpty
             ? RadioProfile.defaults.licenseExpiry
@@ -242,9 +246,10 @@ class _ProfilePageState extends State<ProfilePage> {
         _gridController.text = grid.toUpperCase();
         _latitudeController.text = _formatCoordinate(position.latitude);
         _longitudeController.text = _formatCoordinate(position.longitude);
+        _altitudeController.text = _formatAltitude(position.altitude);
       });
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('已根据设备定位填写 QTH、Grid 和经纬度')),
+        const SnackBar(content: Text('已根据设备定位填写 QTH、Grid、经纬度和海拔')),
       );
     } catch (e) {
       if (!mounted) return;
@@ -273,6 +278,20 @@ class _ProfilePageState extends State<ProfilePage> {
 
   String _formatCoordinate(double value) {
     return value.toStringAsFixed(6);
+  }
+
+  double _parseAltitude(String value) {
+    final trimmed = value.trim();
+    if (trimmed.isEmpty) return 0;
+    final parsed = double.tryParse(trimmed);
+    if (parsed == null || !parsed.isFinite) {
+      throw const FormatException('海拔必须是有效数字');
+    }
+    return parsed;
+  }
+
+  String _formatAltitude(double value) {
+    return value.toStringAsFixed(value.truncateToDouble() == value ? 0 : 1);
   }
 
   String _saveSummary({
@@ -574,6 +593,27 @@ class _ProfilePageState extends State<ProfilePage> {
                       decoration: const InputDecoration(
                         border: InputBorder.none,
                         hintText: '116.407400',
+                      ),
+                    ),
+                  ),
+                ),
+                ListTile(
+                  leading: const Icon(Icons.terrain),
+                  title: const Text('海拔'),
+                  subtitle: const Text('单位米，用于卫星多普勒和可见性计算'),
+                  trailing: SizedBox(
+                    width: 130,
+                    child: TextField(
+                      controller: _altitudeController,
+                      textAlign: TextAlign.end,
+                      keyboardType: const TextInputType.numberWithOptions(
+                        signed: true,
+                        decimal: true,
+                      ),
+                      decoration: const InputDecoration(
+                        border: InputBorder.none,
+                        hintText: '0',
+                        suffixText: 'm',
                       ),
                     ),
                   ),

@@ -1,4 +1,3 @@
-import 'dart:async';
 import 'dart:io';
 import 'dart:math';
 import 'dart:ui' as ui;
@@ -11,7 +10,7 @@ import 'package:url_launcher/url_launcher.dart';
 
 import '../../models/discovery.dart';
 import '../../models/radio_profile.dart';
-import '../../services/satellite_observer_service.dart';
+import '../../models/satellite_doppler.dart';
 import '../../services/satellite_service.dart';
 
 class SatelliteDetailPage extends StatefulWidget {
@@ -44,8 +43,22 @@ class _SatelliteDetailPageState extends State<SatelliteDetailPage> {
   Future<SatelliteDetail> _load() {
     return widget.service.getSatelliteDetail(
       grid: widget.radioProfile.grid,
+      observer: _observerFromProfile(),
       tleSourceUrls: widget.tleSourceUrls,
       satelliteName: widget.satelliteName,
+    );
+  }
+
+  ObserverLocation? _observerFromProfile() {
+    final latitude = widget.radioProfile.latitude;
+    final longitude = widget.radioProfile.longitude;
+    if (latitude == null || longitude == null) return null;
+    return ObserverLocation(
+      latitude: latitude,
+      longitude: longitude,
+      altitudeKm: widget.radioProfile.altitudeMeters / 1000,
+      label: '${latitude.toStringAsFixed(4)}, ${longitude.toStringAsFixed(4)}',
+      source: '电台资料',
     );
   }
 
@@ -98,7 +111,15 @@ class _SatelliteDetailPageState extends State<SatelliteDetailPage> {
                 _HeroCard(detail: detail),
                 const SizedBox(height: 16),
                 if (nextPass != null) ...[
-                  _PhoneAimCard(pass: nextPass),
+                  _CompassEntryCard(
+                    satelliteName: detail.name,
+                    pass: nextPass,
+                    transponders: detail.transponders,
+                    observer: _observerFromProfile() ??
+                        widget.service.observerFromGrid(
+                          widget.radioProfile.grid,
+                        ),
+                  ),
                   const SizedBox(height: 16),
                   _PassRadarCard(pass: nextPass),
                   const SizedBox(height: 16),
@@ -520,489 +541,770 @@ class _PassRadarCard extends StatelessWidget {
   }
 }
 
-class _PhoneAimCard extends StatefulWidget {
+class _CompassEntryCard extends StatelessWidget {
+  final String satelliteName;
   final SatellitePass pass;
+  final List<SatelliteTransponder> transponders;
+  final ObserverLocation? observer;
 
-  const _PhoneAimCard({required this.pass});
-
-  @override
-  State<_PhoneAimCard> createState() => _PhoneAimCardState();
-}
-
-class _PhoneAimCardState extends State<_PhoneAimCard> {
-  final _observerService = SatelliteObserverService();
-  StreamSubscription<DeviceAimState>? _subscription;
-  DeviceAimState? _aim;
-  Object? _sensorError;
-
-  @override
-  void initState() {
-    super.initState();
-    _subscription = _observerService.deviceAimStream.listen(
-      (aim) {
-        if (mounted) setState(() => _aim = aim);
-      },
-      onError: (error) {
-        if (mounted) setState(() => _sensorError = error);
-      },
-    );
-  }
-
-  @override
-  void dispose() {
-    _subscription?.cancel();
-    super.dispose();
-  }
+  const _CompassEntryCard({
+    required this.satelliteName,
+    required this.pass,
+    required this.transponders,
+    required this.observer,
+  });
 
   @override
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
-    final targetAzimuth = widget.pass.currentAzimuth ??
-        ((widget.pass.aosAzimuth + widget.pass.losAzimuth) / 2) % 360;
-    final targetElevation =
-        widget.pass.currentElevation ?? widget.pass.maxElevation;
-    final azimuthDelta =
-        _aim == null ? null : _bearingDelta(_aim!.heading, targetAzimuth);
-    final elevationDelta =
-        _aim == null ? null : targetElevation - _aim!.elevation;
-    final locked = azimuthDelta != null &&
-        elevationDelta != null &&
-        azimuthDelta.abs() <= 8 &&
-        elevationDelta.abs() <= 6;
+    return Container(
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        borderRadius: BorderRadius.circular(10),
+        color: scheme.surfaceContainerLowest,
+        border: Border.all(color: scheme.outlineVariant),
+      ),
+      child: Row(
+        children: [
+          Container(
+            width: 48,
+            height: 48,
+            decoration: BoxDecoration(
+              shape: BoxShape.circle,
+              color: scheme.primaryContainer,
+            ),
+            child: Icon(Icons.explore, color: scheme.onPrimaryContainer),
+          ),
+          const SizedBox(width: 14),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  '实时大罗盘',
+                  style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                        fontWeight: FontWeight.w900,
+                      ),
+                ),
+                const SizedBox(height: 3),
+                Text(
+                  '全屏轨迹罗盘、实时方位仰角和 UV 多普勒频移',
+                  maxLines: 2,
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(color: scheme.onSurfaceVariant),
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(width: 12),
+          FilledButton.icon(
+            onPressed: () => Navigator.of(context).push(
+              MaterialPageRoute(
+                builder: (_) => _SatelliteCompassPage(
+                  satelliteName: satelliteName,
+                  pass: pass,
+                  transponders: transponders,
+                  observer: observer,
+                ),
+              ),
+            ),
+            icon: const Icon(Icons.open_in_full),
+            label: const Text('打开'),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _SatelliteCompassPage extends StatelessWidget {
+  final String satelliteName;
+  final SatellitePass pass;
+  final List<SatelliteTransponder> transponders;
+  final ObserverLocation? observer;
+
+  const _SatelliteCompassPage({
+    required this.satelliteName,
+    required this.pass,
+    required this.transponders,
+    required this.observer,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    return Scaffold(
+      appBar: AppBar(
+        title: Text('$satelliteName 实时大罗盘'),
+      ),
+      body: StreamBuilder<DateTime>(
+        stream: Stream<DateTime>.periodic(
+          const Duration(seconds: 1),
+          (_) => DateTime.now(),
+        ),
+        builder: (context, snapshot) {
+          final now = snapshot.data ?? DateTime.now();
+          final target = _interpolatedLook(pass, now);
+          final phase = _passPhase(pass, now);
+          return ListView(
+            padding: const EdgeInsets.fromLTRB(16, 12, 16, 28),
+            children: [
+              LayoutBuilder(
+                builder: (context, constraints) {
+                  final size = min(constraints.maxWidth, 520.0);
+                  return Center(
+                    child: SizedBox(
+                      width: size,
+                      height: size,
+                      child: CustomPaint(
+                        painter: _LargeCompassPainter(
+                          pass: pass,
+                          target: target,
+                          scheme: scheme,
+                          now: now,
+                        ),
+                      ),
+                    ),
+                  );
+                },
+              ),
+              const SizedBox(height: 16),
+              _CompassStatusPanel(
+                pass: pass,
+                target: target,
+                phase: phase,
+                observer: observer,
+                now: now,
+              ),
+              const SizedBox(height: 16),
+              _RealtimeDopplerPanel(
+                pass: pass,
+                transponders: transponders,
+                now: now,
+              ),
+              const SizedBox(height: 10),
+              Text(
+                '仅供参考，请遵守当地法规和主管部门要求。',
+                style: TextStyle(
+                  color: scheme.onSurfaceVariant,
+                  fontSize: 12,
+                ),
+              ),
+            ],
+          );
+        },
+      ),
+    );
+  }
+}
+
+class _CompassLook {
+  final double azimuth;
+  final double elevation;
+  final double? rangeKm;
+  final double? dopplerFactor;
+
+  const _CompassLook({
+    required this.azimuth,
+    required this.elevation,
+    this.rangeKm,
+    this.dopplerFactor,
+  });
+}
+
+class _CompassStatusPanel extends StatelessWidget {
+  final SatellitePass pass;
+  final _CompassLook target;
+  final _PassPhase phase;
+  final ObserverLocation? observer;
+  final DateTime now;
+
+  const _CompassStatusPanel({
+    required this.pass,
+    required this.target,
+    required this.phase,
+    required this.observer,
+    required this.now,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    return Container(
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        borderRadius: BorderRadius.circular(10),
+        color: scheme.surfaceContainerLowest,
+        border: Border.all(color: scheme.outlineVariant),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Icon(
+                phase.icon,
+                color: phase.color(scheme),
+              ),
+              const SizedBox(width: 10),
+              Expanded(
+                child: Text(
+                  phase.label,
+                  style: const TextStyle(fontWeight: FontWeight.w900),
+                ),
+              ),
+              Text(
+                DateFormat('HH:mm:ss').format(now.toLocal()),
+                style: TextStyle(
+                  color: scheme.onSurfaceVariant,
+                  fontWeight: FontWeight.w700,
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 12),
+          Wrap(
+            spacing: 10,
+            runSpacing: 10,
+            children: [
+              _CompassMetric('目标方位', '${target.azimuth.toStringAsFixed(0)}°'),
+              _CompassMetric('目标仰角', '${target.elevation.toStringAsFixed(0)}°'),
+              _CompassMetric(
+                '距离',
+                target.rangeKm == null
+                    ? '--'
+                    : '${target.rangeKm!.toStringAsFixed(0)} km',
+              ),
+              _CompassMetric('AOS', DateFormat('HH:mm').format(pass.aos)),
+              _CompassMetric(
+                'TCA',
+                DateFormat('HH:mm').format(pass.maxElevationAt),
+              ),
+              _CompassMetric('LOS', DateFormat('HH:mm').format(pass.los)),
+              _CompassMetric(
+                '最高仰角',
+                '${pass.maxElevation.toStringAsFixed(0)}°',
+              ),
+              _CompassMetric(
+                '观测者',
+                observer == null
+                    ? 'Grid'
+                    : '${observer!.source} ${(observer!.altitudeKm * 1000).toStringAsFixed(0)} m',
+              ),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _CompassMetric extends StatelessWidget {
+  final String label;
+  final String value;
+
+  const _CompassMetric(this.label, this.value);
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    return SizedBox(
+      width: 150,
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            label,
+            style: TextStyle(color: scheme.onSurfaceVariant, fontSize: 12),
+          ),
+          const SizedBox(height: 3),
+          Text(
+            value,
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            style: const TextStyle(fontWeight: FontWeight.w900, fontSize: 18),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _RealtimeDopplerPanel extends StatelessWidget {
+  static const _vhfHz = 145800000;
+  static const _uhfHz = 435000000;
+
+  final SatellitePass pass;
+  final List<SatelliteTransponder> transponders;
+  final DateTime now;
+
+  const _RealtimeDopplerPanel({
+    required this.pass,
+    required this.transponders,
+    required this.now,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final currentPoint = currentDopplerPoint(pass, now);
+    final points = [
+      if (currentPoint != null) currentPoint,
+      ...dopplerPassPoints(pass),
+    ];
+    final scheme = Theme.of(context).colorScheme;
     return _DetailPanel(
-      title: '手机对星',
-      icon: Icons.phone_iphone,
+      title: 'UV 多普勒',
+      icon: Icons.graphic_eq,
       child: Container(
-        padding: const EdgeInsets.all(18),
+        padding: const EdgeInsets.all(14),
         decoration: BoxDecoration(
           borderRadius: BorderRadius.circular(10),
           color: scheme.surfaceContainerLowest,
           border: Border.all(color: scheme.outlineVariant),
-          boxShadow: [
-            BoxShadow(
-              color: scheme.shadow.withValues(alpha: 0.08),
-              blurRadius: 14,
-              offset: const Offset(0, 6),
-            ),
-          ],
         ),
-        child: LayoutBuilder(
-          builder: (context, constraints) {
-            final compact = constraints.maxWidth < 560;
-            final radar = SizedBox(
-              width: compact ? 220 : 240,
-              height: compact ? 220 : 240,
-              child: CustomPaint(
-                painter: _PhoneAimPainter(
-                  targetAzimuth: targetAzimuth,
-                  phoneHeading: _aim?.heading,
-                  locked: locked,
-                  scheme: scheme,
-                ),
-              ),
-            );
-            final info = Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Row(
-                  children: [
-                    Icon(Icons.settings_input_antenna, color: scheme.primary),
-                    const SizedBox(width: 10),
-                    Expanded(
-                      child: Text(
-                        locked
-                            ? '已对准卫星方向'
-                            : _aim == null
-                                ? '正在搜索卫星方向'
-                                : _aimInstruction(
-                                    azimuthDelta!, elevationDelta!),
-                        style: TextStyle(
-                          color: scheme.primary,
-                          fontWeight: FontWeight.w900,
-                          fontSize: 16,
-                        ),
-                      ),
-                    ),
-                  ],
-                ),
-                const SizedBox(height: 4),
-                Text(
-                  _sensorError != null
-                      ? '无法读取传感器，当前仅显示目标方向。'
-                      : _aim == null
-                          ? '请将手机朝向绿色扇区'
-                          : locked
-                              ? '传感器正常'
-                              : '请按提示微调手机方向',
-                  style: TextStyle(color: scheme.onSurfaceVariant),
-                ),
-                const Divider(height: 26),
-                Center(
-                  child: RichText(
-                    text: TextSpan(
-                      children: [
-                        TextSpan(
-                          text: '${targetAzimuth.toStringAsFixed(0)}°',
-                          style: TextStyle(
-                            color: scheme.onSurface,
-                            fontSize: 36,
-                            fontWeight: FontWeight.w900,
-                          ),
-                        ),
-                        TextSpan(
-                          text: ' / ',
-                          style: TextStyle(
-                            color: scheme.onSurface,
-                            fontSize: 34,
-                            fontWeight: FontWeight.w900,
-                          ),
-                        ),
-                        TextSpan(
-                          text: '${targetElevation.toStringAsFixed(0)}°',
-                          style: const TextStyle(
-                            color: Color(0xFF2FAD37),
-                            fontSize: 36,
-                            fontWeight: FontWeight.w900,
-                          ),
-                        ),
-                      ],
-                    ),
-                  ),
-                ),
-                const SizedBox(height: 16),
-                Container(
-                  decoration: BoxDecoration(
-                    borderRadius: BorderRadius.circular(8),
-                    border: Border.all(color: scheme.outlineVariant),
-                  ),
-                  child: Row(
-                    children: [
-                      Expanded(
-                        child: _AimMetric(
-                          '当前方位',
-                          _aim == null
-                              ? '--'
-                              : '${_aim!.heading.toStringAsFixed(0)}°',
-                        ),
-                      ),
-                      _MetricDivider(color: scheme.outlineVariant),
-                      Expanded(
-                        child: _AimMetric(
-                          '当前仰角',
-                          _aim == null
-                              ? '--'
-                              : '${_aim!.elevation.toStringAsFixed(0)}°',
-                        ),
-                      ),
-                      _MetricDivider(color: scheme.outlineVariant),
-                      Expanded(
-                        child: _AimMetric(
-                          '误差',
-                          azimuthDelta == null || elevationDelta == null
-                              ? '--'
-                              : '${max(azimuthDelta.abs(), elevationDelta.abs()).toStringAsFixed(0)}°',
-                          color: Colors.deepOrange,
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
-                const SizedBox(height: 18),
-                Row(
-                  children: [
-                    Expanded(
-                      child: OutlinedButton.icon(
-                        onPressed: () {},
-                        icon: const Icon(Icons.explore),
-                        label: const Text('校准罗盘'),
-                      ),
-                    ),
-                    const SizedBox(width: 12),
-                    Expanded(
-                      child: FilledButton.icon(
-                        onPressed: () {},
-                        icon: const Icon(Icons.my_location),
-                        label: const Text('开始实时对星'),
-                      ),
-                    ),
-                  ],
-                ),
-              ],
-            );
-            if (compact) {
-              return Column(
+        child: points.isEmpty
+            ? Text(
+                '当前过境数据缺少有效多普勒采样。',
+                style: TextStyle(color: scheme.onSurfaceVariant),
+              )
+            : Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  radar,
-                  const SizedBox(height: 18),
-                  info,
+                  Text(
+                    pass.isActive
+                        ? '当前过境窗口内，按实时插值显示。'
+                        : '当前未过境，显示 AOS / TCA / LOS 预测值。',
+                    style: TextStyle(color: scheme.onSurfaceVariant),
+                  ),
+                  const SizedBox(height: 10),
+                  _DopplerFrequencyTable(
+                    title: '固定参考',
+                    rows: const [
+                      _DopplerFrequencyRow('VHF', _vhfHz),
+                      _DopplerFrequencyRow('UHF', _uhfHz),
+                    ],
+                    points: points,
+                  ),
+                  ..._realFrequencyTables(points),
                 ],
-              );
-            }
-            return Row(
-              children: [
-                radar,
-                const SizedBox(width: 24),
-                Expanded(child: info),
-              ],
-            );
-          },
-        ),
+              ),
       ),
     );
   }
 
-  String _aimInstruction(double azimuthDelta, double elevationDelta) {
-    final horizontal = azimuthDelta.abs() <= 8
-        ? '方向保持'
-        : azimuthDelta > 0
-            ? '向右 ${azimuthDelta.abs().toStringAsFixed(0)}°'
-            : '向左 ${azimuthDelta.abs().toStringAsFixed(0)}°';
-    final vertical = elevationDelta.abs() <= 6
-        ? '仰角保持'
-        : elevationDelta > 0
-            ? '抬高 ${elevationDelta.abs().toStringAsFixed(0)}°'
-            : '压低 ${elevationDelta.abs().toStringAsFixed(0)}°';
-    return '$horizontal · $vertical';
+  List<Widget> _realFrequencyTables(List<DopplerPassPoint> points) {
+    final usable = transponders
+        .where((item) => item.uplinkLow != null || item.downlinkLow != null)
+        .toList();
+    return [
+      for (var index = 0; index < usable.length; index++) ...[
+        const SizedBox(height: 12),
+        _DopplerFrequencyTable(
+          title:
+              '转发器 ${index + 1} · ${usable[index].mode.isEmpty ? usable[index].description : usable[index].mode}',
+          rows: [
+            if (usable[index].downlinkLow != null)
+              _DopplerFrequencyRow('下行', usable[index].downlinkLow!),
+            if (usable[index].uplinkLow != null)
+              _DopplerFrequencyRow('上行', usable[index].uplinkLow!),
+          ],
+          points: points,
+        ),
+      ],
+    ];
   }
 }
 
-class _PhoneAimPainter extends CustomPainter {
-  final double targetAzimuth;
-  final double? phoneHeading;
-  final bool locked;
-  final ColorScheme scheme;
+class _DopplerFrequencyRow {
+  final String label;
+  final int hz;
 
-  const _PhoneAimPainter({
-    required this.targetAzimuth,
-    required this.phoneHeading,
-    required this.locked,
+  const _DopplerFrequencyRow(this.label, this.hz);
+}
+
+class _DopplerFrequencyTable extends StatelessWidget {
+  final String title;
+  final List<_DopplerFrequencyRow> rows;
+  final List<DopplerPassPoint> points;
+
+  const _DopplerFrequencyTable({
+    required this.title,
+    required this.rows,
+    required this.points,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(
+          title,
+          maxLines: 1,
+          overflow: TextOverflow.ellipsis,
+          style: const TextStyle(fontWeight: FontWeight.w900),
+        ),
+        const SizedBox(height: 8),
+        SingleChildScrollView(
+          scrollDirection: Axis.horizontal,
+          child: DataTable(
+            headingRowHeight: 30,
+            dataRowMinHeight: 38,
+            dataRowMaxHeight: 44,
+            columnSpacing: 12,
+            horizontalMargin: 8,
+            columns: const [
+              DataColumn(label: Text('频点')),
+              DataColumn(label: Text('时刻')),
+              DataColumn(label: Text('偏移')),
+              DataColumn(label: Text('修正后')),
+            ],
+            rows: [
+              for (final row in rows)
+                for (final point in points)
+                  DataRow(
+                    selected: point.isCurrent,
+                    cells: [
+                      DataCell(Text(row.label)),
+                      DataCell(Text(point.label)),
+                      DataCell(Text(frequencyOffset(row.hz, point.factor))),
+                      DataCell(Text(shiftedFrequency(row.hz, point.factor))),
+                    ],
+                  ),
+            ],
+          ),
+        ),
+        if (rows.isEmpty)
+          Text('暂无可用频点', style: TextStyle(color: scheme.onSurfaceVariant)),
+      ],
+    );
+  }
+}
+
+class _LargeCompassPainter extends CustomPainter {
+  final SatellitePass pass;
+  final _CompassLook target;
+  final ColorScheme scheme;
+  final DateTime now;
+
+  const _LargeCompassPainter({
+    required this.pass,
+    required this.target,
     required this.scheme,
+    required this.now,
   });
 
   @override
   void paint(Canvas canvas, Size size) {
     final center = Offset(size.width / 2, size.height / 2);
-    final radius = min(size.width, size.height) / 2 - 28;
-    final outerRadius = radius - 2;
-    final angle = (targetAzimuth - 90) * pi / 180;
-    const sweep = 62 * pi / 180;
-
-    final backgroundPaint = Paint()
-      ..color = scheme.surfaceContainerHighest.withValues(alpha: 0.55);
-    final outerRingPaint = Paint()
-      ..style = PaintingStyle.stroke
-      ..strokeWidth = 12
-      ..strokeCap = StrokeCap.round
-      ..color = const Color(0xFF2D7BE8);
+    final radius = min(size.width, size.height) / 2 - 34;
     final gridPaint = Paint()
       ..style = PaintingStyle.stroke
       ..strokeWidth = 1
-      ..color = scheme.outlineVariant.withValues(alpha: 0.7);
-    final sectorPaint = Paint()
-      ..shader = ui.Gradient.radial(
-        center,
-        outerRadius,
-        [
-          const Color(0xFF4CAF50).withValues(alpha: 0.42),
-          const Color(0xFF4CAF50).withValues(alpha: 0.88),
-        ],
-      );
-
-    canvas.drawCircle(center, outerRadius, backgroundPaint);
-    canvas.drawCircle(center, outerRadius, gridPaint);
-
-    final sectorPath = Path()
-      ..moveTo(center.dx, center.dy)
-      ..arcTo(
-        Rect.fromCircle(center: center, radius: outerRadius - 14),
-        angle - sweep / 2,
-        sweep,
-        false,
-      )
-      ..close();
-    canvas.drawPath(sectorPath, sectorPaint);
-
-    final sectorEdgePaint = Paint()
+      ..color = scheme.outlineVariant.withValues(alpha: 0.72);
+    final ringPaint = Paint()
       ..style = PaintingStyle.stroke
-      ..strokeWidth = 2
-      ..color = const Color(0xFF2F9E44).withValues(alpha: 0.82);
-    canvas.drawArc(
-      Rect.fromCircle(center: center, radius: outerRadius - 14),
-      angle - sweep / 2,
-      sweep,
-      false,
-      sectorEdgePaint,
-    );
-    canvas.drawCircle(center, outerRadius, outerRingPaint);
+      ..strokeWidth = 3
+      ..color = scheme.primary.withValues(alpha: 0.86);
 
-    _drawDirectionLabel(canvas, center, outerRadius, 'N', -90);
-    _drawDirectionLabel(canvas, center, outerRadius, 'E', 0);
-    _drawDirectionLabel(canvas, center, outerRadius, 'S', 90);
-    _drawDirectionLabel(canvas, center, outerRadius, 'W', 180);
-
-    final targetPoint = Offset(
-      center.dx + cos(angle) * (outerRadius - 24),
-      center.dy + sin(angle) * (outerRadius - 24),
-    );
     canvas.drawCircle(
-      targetPoint,
-      17,
-      Paint()..color = scheme.surfaceContainerLowest,
+      center,
+      radius + 18,
+      Paint()..color = scheme.surfaceContainerHighest.withValues(alpha: 0.45),
     );
-    canvas.drawCircle(
-      targetPoint,
-      15,
-      Paint()..color = const Color(0xFF43A047),
+    for (final scale in [1.0, 0.66, 0.33]) {
+      canvas.drawCircle(center, radius * scale, gridPaint);
+    }
+    canvas.drawCircle(center, radius, ringPaint);
+    canvas.drawLine(
+      Offset(center.dx - radius, center.dy),
+      Offset(center.dx + radius, center.dy),
+      gridPaint,
     );
-    _drawTargetIcon(canvas, targetPoint, scheme.surfaceContainerLowest);
+    canvas.drawLine(
+      Offset(center.dx, center.dy - radius),
+      Offset(center.dx, center.dy + radius),
+      gridPaint,
+    );
 
-    if (phoneHeading != null && !locked) {
-      final phoneAngle = (phoneHeading! - 90) * pi / 180;
-      final phonePoint = Offset(
-        center.dx + cos(phoneAngle) * (outerRadius - 18),
-        center.dy + sin(phoneAngle) * (outerRadius - 18),
+    for (var degree = 0; degree < 360; degree += 10) {
+      final major = degree % 30 == 0;
+      final angle = (degree - 90) * pi / 180;
+      final start = Offset(
+        center.dx + cos(angle) * (radius - (major ? 12 : 7)),
+        center.dy + sin(angle) * (radius - (major ? 12 : 7)),
+      );
+      final end = Offset(
+        center.dx + cos(angle) * radius,
+        center.dy + sin(angle) * radius,
       );
       canvas.drawLine(
-        center,
-        phonePoint,
+        start,
+        end,
         Paint()
-          ..color = scheme.onSurface.withValues(alpha: 0.55)
-          ..strokeWidth = 3
-          ..strokeCap = StrokeCap.round,
+          ..style = PaintingStyle.stroke
+          ..strokeWidth = major ? 2 : 1
+          ..color = scheme.onSurface.withValues(alpha: major ? 0.72 : 0.38),
       );
     }
 
-    final centerPaint = Paint()
-      ..shader = ui.Gradient.linear(
-        const Offset(0, 0),
-        const Offset(60, 60),
-        const [Color(0xFF0E4C93), Color(0xFF2E78D7)],
-      );
-    canvas.drawCircle(center, outerRadius * 0.28, centerPaint);
+    _drawCompassLabel(canvas, center, radius + 21, 'N', 0);
+    _drawCompassLabel(canvas, center, radius + 21, 'E', 90);
+    _drawCompassLabel(canvas, center, radius + 21, 'S', 180);
+    _drawCompassLabel(canvas, center, radius + 21, 'W', 270);
+    _drawElevationLabel(canvas, center, radius * 0.66, '30°');
+    _drawElevationLabel(canvas, center, radius * 0.33, '60°');
+    _drawElevationLabel(canvas, center, 0, '90°');
+
+    _drawTrack(canvas, center, radius);
+    _drawEventMarker(canvas, center, radius, pass.aosAzimuth, 0, 'AOS');
+    _drawEventMarker(
+      canvas,
+      center,
+      radius,
+      _lookAtTime(pass.maxElevationAt).azimuth,
+      pass.maxElevation,
+      'TCA',
+    );
+    _drawEventMarker(canvas, center, radius, pass.losAzimuth, 0, 'LOS');
+
+    final targetPoint =
+        _polarPoint(center, radius, target.azimuth, target.elevation);
+    canvas.drawCircle(
+      targetPoint,
+      13,
+      Paint()..color = const Color(0xFFFFB020),
+    );
+    canvas.drawCircle(
+      targetPoint,
+      19,
+      Paint()
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 3
+        ..color = const Color(0xFFFFB020).withValues(alpha: 0.35),
+    );
+    _drawSatelliteIcon(canvas, targetPoint);
+    _drawNowLabel(canvas, targetPoint);
   }
 
-  void _drawDirectionLabel(
+  void _drawTrack(Canvas canvas, Offset center, double radius) {
+    final samples = pass.lookSamples;
+    final trackPaint = Paint()
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 4
+      ..strokeCap = StrokeCap.round
+      ..strokeJoin = StrokeJoin.round
+      ..color = scheme.primary.withValues(alpha: 0.78);
+    final futurePaint = Paint()
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 3
+      ..strokeCap = StrokeCap.round
+      ..strokeJoin = StrokeJoin.round
+      ..color = scheme.primary.withValues(alpha: 0.28);
+
+    if (samples.length >= 2) {
+      final pastPath = Path();
+      final futurePath = Path();
+      var hasPast = false;
+      var hasFuture = false;
+      for (var index = 0; index < samples.length; index++) {
+        final sample = samples[index];
+        final point = _polarPoint(
+          center,
+          radius,
+          sample.azimuth,
+          sample.elevation,
+        );
+        if (!sample.time.isAfter(now)) {
+          if (!hasPast) {
+            pastPath.moveTo(point.dx, point.dy);
+            hasPast = true;
+          } else {
+            pastPath.lineTo(point.dx, point.dy);
+          }
+        }
+        if (!sample.time.isBefore(now)) {
+          if (!hasFuture) {
+            futurePath.moveTo(point.dx, point.dy);
+            hasFuture = true;
+          } else {
+            futurePath.lineTo(point.dx, point.dy);
+          }
+        }
+      }
+      if (hasPast) canvas.drawPath(pastPath, trackPaint);
+      if (hasFuture) canvas.drawPath(futurePath, futurePaint);
+      return;
+    }
+
+    final start = _polarPoint(center, radius, pass.aosAzimuth, 0);
+    final peak = _polarPoint(
+      center,
+      radius,
+      (pass.aosAzimuth + pass.losAzimuth) / 2,
+      pass.maxElevation,
+    );
+    final end = _polarPoint(center, radius, pass.losAzimuth, 0);
+    final path = Path()
+      ..moveTo(start.dx, start.dy)
+      ..quadraticBezierTo(peak.dx, peak.dy, end.dx, end.dy);
+    canvas.drawPath(path, futurePaint);
+  }
+
+  void _drawEventMarker(
     Canvas canvas,
     Offset center,
     double radius,
+    double azimuth,
+    double elevation,
     String label,
-    double degrees,
   ) {
-    final angle = degrees * pi / 180;
+    final point = _polarPoint(center, radius, azimuth, elevation);
+    canvas.drawCircle(
+      point,
+      4.5,
+      Paint()..color = scheme.onSurface.withValues(alpha: 0.76),
+    );
+    final painter = TextPainter(
+      text: TextSpan(
+        text: label,
+        style: TextStyle(
+          color: scheme.onSurfaceVariant,
+          fontSize: 10,
+          fontWeight: FontWeight.w800,
+        ),
+      ),
+      textDirection: ui.TextDirection.ltr,
+    )..layout();
+    painter.paint(canvas, Offset(point.dx + 6, point.dy - painter.height / 2));
+  }
+
+  _CompassLook _lookAtTime(DateTime time) {
+    return _interpolatedLook(pass, time);
+  }
+
+  void _drawSatelliteIcon(Canvas canvas, Offset center) {
+    final paint = Paint()
+      ..color = Colors.white
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 2
+      ..strokeCap = StrokeCap.round;
+    canvas.drawCircle(center, 4, paint);
+    canvas.drawLine(
+      Offset(center.dx - 9, center.dy - 9),
+      Offset(center.dx - 3, center.dy - 3),
+      paint,
+    );
+    canvas.drawLine(
+      Offset(center.dx + 3, center.dy + 3),
+      Offset(center.dx + 9, center.dy + 9),
+      paint,
+    );
+    canvas.drawLine(
+      Offset(center.dx - 11, center.dy - 4),
+      Offset(center.dx - 4, center.dy - 11),
+      paint,
+    );
+    canvas.drawLine(
+      Offset(center.dx + 4, center.dy + 11),
+      Offset(center.dx + 11, center.dy + 4),
+      paint,
+    );
+  }
+
+  void _drawNowLabel(Canvas canvas, Offset point) {
+    final painter = TextPainter(
+      text: TextSpan(
+        text:
+            '${target.azimuth.toStringAsFixed(0)}° / ${target.elevation.toStringAsFixed(0)}°',
+        style: TextStyle(
+          color: scheme.onSurface,
+          fontSize: 12,
+          fontWeight: FontWeight.w900,
+        ),
+      ),
+      textDirection: ui.TextDirection.ltr,
+    )..layout();
+    final offset = Offset(
+      (point.dx + 12).clamp(0, double.infinity).toDouble(),
+      point.dy - painter.height - 10,
+    );
+    final rect = RRect.fromRectAndRadius(
+      Rect.fromLTWH(
+        offset.dx - 6,
+        offset.dy - 4,
+        painter.width + 12,
+        painter.height + 8,
+      ),
+      const Radius.circular(6),
+    );
+    canvas.drawRRect(
+      rect,
+      Paint()..color = scheme.surface.withValues(alpha: 0.84),
+    );
+    painter.paint(canvas, offset);
+  }
+
+  Offset _polarPoint(
+      Offset center, double radius, double azimuth, double elevation) {
+    final polarRadius = radius * (1 - elevation.clamp(0, 90) / 90);
+    final angle = (azimuth - 90) * pi / 180;
+    return Offset(
+      center.dx + cos(angle) * polarRadius,
+      center.dy + sin(angle) * polarRadius,
+    );
+  }
+
+  void _drawCompassLabel(Canvas canvas, Offset center, double radius,
+      String label, double degree) {
+    final angle = (degree - 90) * pi / 180;
     final point = Offset(
-      center.dx + cos(angle) * (radius + 18),
-      center.dy + sin(angle) * (radius + 18),
+      center.dx + cos(angle) * radius,
+      center.dy + sin(angle) * radius,
     );
     final painter = TextPainter(
       text: TextSpan(
         text: label,
         style: TextStyle(
           color: scheme.onSurface,
+          fontSize: 18,
           fontWeight: FontWeight.w900,
-          fontSize: 16,
         ),
       ),
       textDirection: ui.TextDirection.ltr,
     )..layout();
-    final labelRect = Rect.fromCenter(
-      center: point,
-      width: painter.width + 10,
-      height: painter.height + 6,
-    );
-    canvas.drawRRect(
-      RRect.fromRectAndRadius(labelRect, const Radius.circular(999)),
-      Paint()..color = scheme.surface.withValues(alpha: 0.62),
-    );
     painter.paint(
       canvas,
-      Offset(
-        point.dx - painter.width / 2,
-        point.dy - painter.height / 2,
+      Offset(point.dx - painter.width / 2, point.dy - painter.height / 2),
+    );
+  }
+
+  void _drawElevationLabel(
+      Canvas canvas, Offset center, double radius, String label) {
+    final painter = TextPainter(
+      text: TextSpan(
+        text: label,
+        style: TextStyle(
+          color: scheme.onSurfaceVariant,
+          fontSize: 11,
+          fontWeight: FontWeight.w700,
+        ),
       ),
-    );
-  }
-
-  void _drawTargetIcon(Canvas canvas, Offset center, Color color) {
-    final paint = Paint()
-      ..color = color
-      ..style = PaintingStyle.stroke
-      ..strokeWidth = 2
-      ..strokeCap = StrokeCap.round;
-    canvas.drawCircle(center, 5, paint);
-    canvas.drawLine(
-      Offset(center.dx, center.dy - 10),
-      Offset(center.dx, center.dy - 5),
-      paint,
-    );
-    canvas.drawLine(
-      Offset(center.dx, center.dy + 5),
-      Offset(center.dx, center.dy + 10),
-      paint,
-    );
-    canvas.drawLine(
-      Offset(center.dx - 10, center.dy),
-      Offset(center.dx - 5, center.dy),
-      paint,
-    );
-    canvas.drawLine(
-      Offset(center.dx + 5, center.dy),
-      Offset(center.dx + 10, center.dy),
-      paint,
+      textDirection: ui.TextDirection.ltr,
+    )..layout();
+    painter.paint(
+      canvas,
+      Offset(center.dx + radius + 4, center.dy - painter.height - 2),
     );
   }
 
   @override
-  bool shouldRepaint(covariant _PhoneAimPainter oldDelegate) {
-    return oldDelegate.targetAzimuth != targetAzimuth ||
-        oldDelegate.phoneHeading != phoneHeading ||
-        oldDelegate.locked != locked ||
-        oldDelegate.scheme != scheme;
-  }
-}
-
-class _AimMetric extends StatelessWidget {
-  final String label;
-  final String value;
-  final Color? color;
-
-  const _AimMetric(this.label, this.value, {this.color});
-
-  @override
-  Widget build(BuildContext context) {
-    final scheme = Theme.of(context).colorScheme;
-    return Padding(
-      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 12),
-      child: Column(
-        children: [
-          Text(
-            label,
-            maxLines: 1,
-            overflow: TextOverflow.ellipsis,
-            style: TextStyle(color: scheme.onSurfaceVariant, fontSize: 12),
-          ),
-          const SizedBox(height: 4),
-          Text(
-            value,
-            style: TextStyle(
-              color: color ?? scheme.onSurface,
-              fontSize: 22,
-              fontWeight: FontWeight.w900,
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-}
-
-class _MetricDivider extends StatelessWidget {
-  final Color color;
-
-  const _MetricDivider({required this.color});
-
-  @override
-  Widget build(BuildContext context) {
-    return Container(width: 1, height: 58, color: color);
+  bool shouldRepaint(covariant _LargeCompassPainter oldDelegate) {
+    return oldDelegate.pass != pass ||
+        oldDelegate.target != target ||
+        oldDelegate.scheme != scheme ||
+        oldDelegate.now != now;
   }
 }
 
@@ -1214,10 +1516,10 @@ class _DopplerPredictionPanel extends StatelessWidget {
         ),
         builder: (context, snapshot) {
           final now = snapshot.data ?? DateTime.now();
-          final currentPoint = _currentDopplerPoint(pass, now);
+          final currentPoint = currentDopplerPoint(pass, now);
           final points = [
             if (currentPoint != null) currentPoint,
-            ..._dopplerPoints(pass),
+            ...dopplerPassPoints(pass),
           ];
           if (points.isEmpty) {
             return Text(
@@ -1259,7 +1561,7 @@ class _DopplerPredictionPanel extends StatelessWidget {
 class _DopplerTransponderCard extends StatelessWidget {
   final int index;
   final SatelliteTransponder transponder;
-  final List<_DopplerPassPoint> points;
+  final List<DopplerPassPoint> points;
 
   const _DopplerTransponderCard({
     required this.index,
@@ -1308,19 +1610,19 @@ class _DopplerTransponderCard extends StatelessWidget {
                     selected: point.isCurrent,
                     cells: [
                       DataCell(Text(point.label)),
-                      DataCell(Text(_shiftedFrequency(
+                      DataCell(Text(shiftedFrequency(
                         transponder.downlinkLow,
                         point.factor,
                       ))),
-                      DataCell(Text(_frequencyOffset(
+                      DataCell(Text(frequencyOffset(
                         transponder.downlinkLow,
                         point.factor,
                       ))),
-                      DataCell(Text(_shiftedFrequency(
+                      DataCell(Text(shiftedFrequency(
                         transponder.uplinkLow,
                         point.factor,
                       ))),
-                      DataCell(Text(_frequencyOffset(
+                      DataCell(Text(frequencyOffset(
                         transponder.uplinkLow,
                         point.factor,
                       ))),
@@ -1333,18 +1635,6 @@ class _DopplerTransponderCard extends StatelessWidget {
       ),
     );
   }
-}
-
-class _DopplerPassPoint {
-  final String label;
-  final double factor;
-  final bool isCurrent;
-
-  const _DopplerPassPoint({
-    required this.label,
-    required this.factor,
-    this.isCurrent = false,
-  });
 }
 
 class _AmsatStatusPanel extends StatelessWidget {
@@ -1890,53 +2180,77 @@ String _formatFrequency(int? hz) {
   return '${(hz / 1000000).toStringAsFixed(3)} MHz';
 }
 
-List<_DopplerPassPoint> _dopplerPoints(SatellitePass pass) {
-  final fallback = pass.dopplerFactor ?? 1.0;
-  final samples = pass.lookSamples
-      .where((sample) => _isFiniteFactor(sample.dopplerFactor))
-      .toList(growable: false);
-  if (samples.isEmpty) {
-    if (!_isFiniteFactor(fallback)) return const [];
-    return [
-      _DopplerPassPoint(label: 'AOS', factor: fallback),
-      _DopplerPassPoint(label: 'TCA', factor: fallback),
-      _DopplerPassPoint(label: 'LOS', factor: fallback),
-    ];
-  }
-
-  final tca = samples.reduce((a, b) {
-    final aDelta = a.time.difference(pass.maxElevationAt).inSeconds.abs();
-    final bDelta = b.time.difference(pass.maxElevationAt).inSeconds.abs();
-    return aDelta <= bDelta ? a : b;
-  });
-
-  return [
-    _DopplerPassPoint(label: 'AOS', factor: samples.first.dopplerFactor!),
-    _DopplerPassPoint(label: 'TCA', factor: tca.dopplerFactor!),
-    _DopplerPassPoint(label: 'LOS', factor: samples.last.dopplerFactor!),
-  ];
+String _formatDuration(Duration duration) {
+  final hours = duration.inHours;
+  final minutes = duration.inMinutes.remainder(60);
+  if (hours <= 0) return '${minutes}m';
+  return '${hours}h ${minutes.toString().padLeft(2, '0')}m';
 }
 
-_DopplerPassPoint? _currentDopplerPoint(SatellitePass pass, DateTime now) {
-  if (now.isBefore(pass.aos) || now.isAfter(pass.los)) return null;
-  final factor = _interpolatedDopplerFactor(pass, now);
-  if (factor == null) return null;
-  return _DopplerPassPoint(
-    label: '实时',
-    factor: factor,
-    isCurrent: true,
+class _PassPhase {
+  final String label;
+  final IconData icon;
+  final Color Function(ColorScheme scheme) color;
+
+  const _PassPhase({
+    required this.label,
+    required this.icon,
+    required this.color,
+  });
+}
+
+_PassPhase _passPhase(SatellitePass pass, DateTime now) {
+  if (now.isBefore(pass.aos)) {
+    final remaining = pass.aos.difference(now);
+    return _PassPhase(
+      label: '未进入过境窗口，距离 AOS ${_formatDuration(remaining)}',
+      icon: Icons.schedule,
+      color: (scheme) => scheme.primary,
+    );
+  }
+  if (now.isAfter(pass.los)) {
+    return _PassPhase(
+      label: '本次过境已结束',
+      icon: Icons.check_circle_outline,
+      color: (scheme) => scheme.outline,
+    );
+  }
+  if (now.isBefore(pass.maxElevationAt)) {
+    final remaining = pass.maxElevationAt.difference(now);
+    return _PassPhase(
+      label: '过境中，上升段，距离 TCA ${_formatDuration(remaining)}',
+      icon: Icons.trending_up,
+      color: (scheme) => const Color(0xFF2F9E44),
+    );
+  }
+  final remaining = pass.los.difference(now);
+  return _PassPhase(
+    label: '过境中，下降段，距离 LOS ${_formatDuration(remaining)}',
+    icon: Icons.trending_down,
+    color: (scheme) => Colors.deepOrange,
   );
 }
 
-double? _interpolatedDopplerFactor(SatellitePass pass, DateTime target) {
-  final samples = pass.lookSamples
-      .where((sample) => _isFiniteFactor(sample.dopplerFactor))
-      .toList(growable: false);
+double _bearingDelta(double heading, double target) {
+  return (target - heading + 540) % 360 - 180;
+}
+
+_CompassLook _interpolatedLook(SatellitePass pass, DateTime target) {
+  final samples = pass.lookSamples;
   if (samples.isEmpty) {
-    return _isFiniteFactor(pass.dopplerFactor) ? pass.dopplerFactor : null;
+    return _CompassLook(
+      azimuth: pass.currentAzimuth ?? ((pass.aosAzimuth + pass.losAzimuth) / 2),
+      elevation: pass.currentElevation ?? pass.maxElevation,
+      rangeKm: pass.currentRangeKm,
+      dopplerFactor: pass.dopplerFactor,
+    );
   }
-  if (!target.isAfter(samples.first.time)) return samples.first.dopplerFactor;
-  if (!target.isBefore(samples.last.time)) return samples.last.dopplerFactor;
+  if (!target.isAfter(samples.first.time)) {
+    return _lookFromSample(samples.first);
+  }
+  if (!target.isBefore(samples.last.time)) {
+    return _lookFromSample(samples.last);
+  }
 
   for (var index = 1; index < samples.length; index++) {
     final previous = samples[index - 1];
@@ -1945,38 +2259,39 @@ double? _interpolatedDopplerFactor(SatellitePass pass, DateTime target) {
       continue;
     }
     final span = next.time.difference(previous.time).inMilliseconds;
-    if (span <= 0) return next.dopplerFactor;
+    if (span <= 0) return _lookFromSample(next);
     final elapsed = target.difference(previous.time).inMilliseconds;
     final ratio = (elapsed / span).clamp(0.0, 1.0);
-    return previous.dopplerFactor! +
-        (next.dopplerFactor! - previous.dopplerFactor!) * ratio;
+    return _CompassLook(
+      azimuth: _interpolateAngle(previous.azimuth, next.azimuth, ratio),
+      elevation:
+          previous.elevation + (next.elevation - previous.elevation) * ratio,
+      rangeKm: previous.rangeKm + (next.rangeKm - previous.rangeKm) * ratio,
+      dopplerFactor: _interpolateNullable(
+        previous.dopplerFactor,
+        next.dopplerFactor,
+        ratio,
+      ),
+    );
   }
-  return pass.dopplerFactor;
+  return _lookFromSample(samples.last);
 }
 
-String _shiftedFrequency(int? hz, double factor) {
-  if (hz == null || hz <= 0 || !factor.isFinite) return '--';
-  return '${(hz * factor / 1000000).toStringAsFixed(3)} MHz';
+_CompassLook _lookFromSample(SatelliteLookSample sample) {
+  return _CompassLook(
+    azimuth: sample.azimuth,
+    elevation: sample.elevation,
+    rangeKm: sample.rangeKm,
+    dopplerFactor: sample.dopplerFactor,
+  );
 }
 
-String _frequencyOffset(int? hz, double factor) {
-  if (hz == null || hz <= 0 || !factor.isFinite) return '--';
-  final khz = hz * (factor - 1) / 1000;
-  final sign = khz >= 0 ? '+' : '';
-  return '$sign${khz.toStringAsFixed(1)} kHz';
+double _interpolateAngle(double start, double end, double ratio) {
+  final delta = _bearingDelta(start, end);
+  return (start + delta * ratio + 360) % 360;
 }
 
-bool _isFiniteFactor(double? value) {
-  return value != null && value.isFinite;
-}
-
-String _formatDuration(Duration duration) {
-  final hours = duration.inHours;
-  final minutes = duration.inMinutes.remainder(60);
-  if (hours <= 0) return '${minutes}m';
-  return '${hours}h ${minutes.toString().padLeft(2, '0')}m';
-}
-
-double _bearingDelta(double heading, double target) {
-  return (target - heading + 540) % 360 - 180;
+double? _interpolateNullable(double? start, double? end, double ratio) {
+  if (start == null || end == null) return start ?? end;
+  return start + (end - start) * ratio;
 }

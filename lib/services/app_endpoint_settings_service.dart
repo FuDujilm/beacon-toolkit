@@ -1,3 +1,5 @@
+import 'dart:convert';
+
 import 'package:dio/dio.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
@@ -81,12 +83,23 @@ class AppEndpointSettingsService {
   Future<OpenOidcSettings> getOpenOidcSettings() async {
     final baseUrl = await _readStorageValue(AppConstants.oauthBaseUrlKey);
     final clientId = await _readStorageValue(AppConstants.oauthClientIdKey);
+    final normalizedBaseUrl = normalizeOpenOidcBaseUrl(
+      baseUrl == null || baseUrl.trim().isEmpty
+          ? AppConstants.oauthBaseUrl
+          : baseUrl,
+    );
+    if (baseUrl != null &&
+        normalizeOpenOidcBaseUrl(baseUrl) ==
+            AppConstants.legacyLocalOAuthBaseUrl) {
+      await _storage.write(
+        key: AppConstants.oauthBaseUrlKey,
+        value: AppConstants.oauthBaseUrl,
+      );
+    }
     return OpenOidcSettings(
-      baseUrl: normalizeOpenOidcBaseUrl(
-        baseUrl == null || baseUrl.trim().isEmpty
-            ? AppConstants.oauthBaseUrl
-            : baseUrl,
-      ),
+      baseUrl: normalizedBaseUrl == AppConstants.legacyLocalOAuthBaseUrl
+          ? AppConstants.oauthBaseUrl
+          : normalizedBaseUrl,
       clientId: clientId?.trim().isNotEmpty == true
           ? clientId!.trim()
           : AppConstants.oauthClientId,
@@ -121,11 +134,18 @@ class AppEndpointSettingsService {
 
     final stopwatch = Stopwatch()..start();
     try {
-      final response = await dio.get<Map<String, dynamic>>(
+      final response = await dio.get<dynamic>(
         '$normalized/.well-known/openid-configuration',
       );
       stopwatch.stop();
-      final data = response.data ?? {};
+      final data = _decodeJsonObject(response.data);
+      if (data == null) {
+        return {
+          'success': false,
+          'latency': stopwatch.elapsedMilliseconds,
+          'message': 'OIDC Discovery 未返回 JSON 对象，请检查是否填到了 OpenOIDC API 地址。',
+        };
+      }
       final hasEndpoints = data['authorization_endpoint'] != null &&
           data['token_endpoint'] != null &&
           data['userinfo_endpoint'] != null;
@@ -144,6 +164,23 @@ class AppEndpointSettingsService {
         'message': _connectionErrorMessage(e),
       };
     }
+  }
+
+  Map<String, dynamic>? _decodeJsonObject(Object? data) {
+    if (data is Map<String, dynamic>) return data;
+    if (data is Map) return Map<String, dynamic>.from(data);
+    if (data is String) {
+      final trimmed = data.trim();
+      if (trimmed.isEmpty) return null;
+      try {
+        final decoded = jsonDecode(trimmed);
+        if (decoded is Map<String, dynamic>) return decoded;
+        if (decoded is Map) return Map<String, dynamic>.from(decoded);
+      } catch (_) {
+        return null;
+      }
+    }
+    return null;
   }
 
   Future<QrzSettings> getQrzSettings() async {
@@ -326,13 +363,21 @@ class AppEndpointSettingsService {
   String normalizeOpenOidcBaseUrl(String url) {
     final trimmed = url.trim();
     if (trimmed.isEmpty) return AppConstants.oauthBaseUrl;
-    final withoutHash = trimmed.split('#').first;
-    final withoutTrailingSlash = withoutHash.replaceFirst(RegExp(r'/+$'), '');
+    final withoutQueryOrHash = trimmed.split(RegExp(r'[?#]')).first;
+    final withoutTrailingSlash =
+        withoutQueryOrHash.replaceFirst(RegExp(r'/+$'), '');
     final uri = Uri.tryParse(withoutTrailingSlash);
     if (uri == null || !uri.hasScheme || uri.host.isEmpty) {
       return withoutTrailingSlash;
     }
-    return uri.replace(query: '', fragment: '').toString();
+    final normalizedPath = uri.path.replaceFirst(RegExp(r'/+$'), '');
+    return Uri(
+      scheme: uri.scheme,
+      userInfo: uri.userInfo,
+      host: uri.host,
+      port: uri.hasPort ? uri.port : null,
+      path: normalizedPath.isEmpty ? null : normalizedPath,
+    ).toString();
   }
 
   String _defaultBeaconFrontendBaseUrl() {

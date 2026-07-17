@@ -2109,7 +2109,7 @@ class _SatelliteHeaderCard extends StatelessWidget {
                     ),
                     const SizedBox(height: 4),
                     Text(
-                      '订阅卫星过境、转发器和手机对星',
+                      '订阅卫星过境、转发器和实时罗盘',
                       style: TextStyle(color: scheme.onSurfaceVariant),
                     ),
                   ],
